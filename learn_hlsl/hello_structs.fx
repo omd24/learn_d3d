@@ -21,7 +21,7 @@ VS_OUTPUT vertex_shader (VS_INPUT input) {
 }
 
 float4 pixel_shader (VS_OUTPUT input) : SV_Target {
-    return float4(1, 0, 0, 1);
+    return float4(0, 0, 0, 1);
 }
 
 technique10 main10 {
