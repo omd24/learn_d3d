@@ -45,6 +45,7 @@
 
 #define SDL_MAIN_HANDLED
 #include "SDL2/SDL.h"
+#include "SDL2/SDL_syswm.h"
 
 #include <cstdio>
 #include <algorithm>
@@ -129,9 +130,56 @@ int main ()
     CHECK_AND_FAIL(res);
 
     // Create Command Queues
+    D3D12_COMMAND_QUEUE_DESC cmd_q_desc = {};
+    cmd_q_desc.Type = D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT;
+    cmd_q_desc.Flags = D3D12_COMMAND_QUEUE_FLAGS::D3D12_COMMAND_QUEUE_FLAG_NONE;
+    ID3D12CommandQueue * d3d_cmd_q = nullptr;
+    res = d3d_device->CreateCommandQueue(&cmd_q_desc, IID_PPV_ARGS(&d3d_cmd_q));
+    CHECK_AND_FAIL(res);
 
-    // Create Swapchain 
+    // -- data
+    UINT width = 1280;
+    UINT height = 720;
+    UINT frame_count = 2;   // Use double-buffering
 
+    DXGI_MODE_DESC backbuffer_desc = {};
+    backbuffer_desc.Width = 1280;
+    backbuffer_desc.Height = 720;
+    backbuffer_desc.Format = DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    DXGI_SAMPLE_DESC sampler_desc = {};
+    sampler_desc.Count = 1;
+    sampler_desc.Quality = 0;
+
+    SDL_SysWMinfo wnd_info = {};
+    SDL_GetWindowWMInfo(wnd, &wnd_info);
+    HWND hwnd = wnd_info.info.win.window;
+
+    // Create Swapchain
+    DXGI_SWAP_CHAIN_DESC swapchain_desc = {};
+    swapchain_desc.BufferDesc = backbuffer_desc;
+    swapchain_desc.SampleDesc = sampler_desc;
+    swapchain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapchain_desc.BufferCount = 2; // Use double-buffering;
+    swapchain_desc.OutputWindow = hwnd;
+    swapchain_desc.Windowed = TRUE;
+    swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapchain_desc.Flags = DXGI_SWAP_CHAIN_FLAG::DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+    IDXGISwapChain * swapchain = nullptr;
+    res = dxgi_factory->CreateSwapChain(d3d_cmd_q, &swapchain_desc, &swapchain);
+    CHECK_AND_FAIL(res);
+
+    IDXGISwapChain3 * d3d_swapchain = nullptr;
+    res = swapchain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&d3d_swapchain);
+    CHECK_AND_FAIL(res);
+    UINT frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
+    ::printf("The current frame index is %d\n", frame_index);
+
+    d3d_swapchain->Release();
+    swapchain->Release();
+    d3d_cmd_q->Release();
+    d3d_device->Release();
     dxgi_factory->Release();
     debug_interface_dx->Release();
 
