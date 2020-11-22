@@ -5,15 +5,13 @@ struct PSInput {
 
 PSInput
 VSMain (float4 p : POSITION, float4 c : COLOR) {
-    PSInput result = {};
+    PSInput result;
     result.position = p;
     result.color = c;
     return result;
 }
 
 float4
-PSMain (PSInput input) : SV_Position {
+PSMain (PSInput input) : SV_Target {
     return input.color;
 }
-
-

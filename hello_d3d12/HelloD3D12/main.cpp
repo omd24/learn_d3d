@@ -81,7 +81,7 @@ runtimeobject.lib
 //#define FAILED_OPERATION(hr)      (((HRESULT)(hr)) != S_OK)
 #define CHECK_AND_FAIL(hr)                          \
     if (FAILED(hr)) {                               \
-        ::printf("[ERROR] " #hr "() failed. \n");   \
+        ::printf("[ERROR] " #hr "() failed at line %d. \n", __LINE__);   \
         ::abort();                                  \
     }                                               \
     /**/
@@ -232,6 +232,28 @@ int main ()
         ::abort();
     }
 
+    // Load and compile shaders
+    wchar_t const * shaders_path = L"./shaders/basic.hlsl";
+    ID3DBlob * vertex_shader = nullptr;
+    ID3DBlob * vs_err = nullptr;
+    ID3DBlob * pixel_shader = nullptr;
+    ID3DBlob * ps_err = nullptr;
+    res = D3DCompileFromFile(shaders_path, nullptr, nullptr, "VSMain", "vs_5_0", compiler_flags, 0, &vertex_shader, &vs_err);
+    if (FAILED(res)) {
+        if (vs_err) {
+            OutputDebugStringA((char *)vs_err->GetBufferPointer());
+            vs_err->Release();
+        } else {
+            ::printf("could not load/compile shader\n");
+        }
+    }
+    res = D3DCompileFromFile(shaders_path, nullptr, nullptr, "PSMain", "ps_5_0", compiler_flags, 0, &pixel_shader, &ps_err);
+    if (FAILED(res)) {
+        if (ps_err) {
+            OutputDebugStringA((char *)ps_err->GetBufferPointer());
+            ps_err->Release();
+        }
+    }
 
     // cleanup
     root_signature->Release();
