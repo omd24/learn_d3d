@@ -140,7 +140,9 @@ int main ()
     // -- data
     UINT width = 1280;
     UINT height = 720;
-    UINT frame_count = 2;   // Use double-buffering
+    UINT const frame_count = 2;   // Use double-buffering
+    UINT rtv_descriptor_size = 0;
+    ID3D12Resource * render_targets [frame_count];
 
     DXGI_MODE_DESC backbuffer_desc = {};
     backbuffer_desc.Width = 1280;
@@ -175,6 +177,35 @@ int main ()
     CHECK_AND_FAIL(res);
     UINT frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
     ::printf("The current frame index is %d\n", frame_index);
+
+    // Create Render Target View Descriptor Heap
+    D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc = {};
+    descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    descriptor_heap_desc.NumDescriptors = frame_count;
+    descriptor_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    ID3D12DescriptorHeap * d3d_heap = nullptr;
+    res = d3d_device->CreateDescriptorHeap(&descriptor_heap_desc, IID_PPV_ARGS(&d3d_heap));
+    CHECK_AND_FAIL(res);
+
+    rtv_descriptor_size = d3d_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    ::printf("size of rtv descriptor heap (to increment handle): %d\n", rtv_descriptor_size);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle_start = d3d_heap->GetCPUDescriptorHandleForHeapStart();
+    for (UINT i = 0; i < frame_count; ++i) {
+        res = d3d_swapchain->GetBuffer(i, IID_PPV_ARGS(&render_targets[i]));
+        CHECK_AND_FAIL(res);
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
+        cpu_handle.ptr = rtv_handle_start.ptr + ((UINT64)i * rtv_descriptor_size);
+        d3d_device->CreateRenderTargetView(render_targets[i], nullptr, cpu_handle);
+        ::printf("render target %d width = %d, height = %d\n", i, (UINT)render_targets[i]->GetDesc().Width, (UINT)render_targets[i]->GetDesc().Height);
+    }
+
+    ID3D12CommandAllocator * d3d_cmd_allocator = nullptr;
+    res = d3d_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&d3d_cmd_allocator));
+    // TODO(omid): fix check and fail 
+    //res = S_FALSE;
+    CHECK_AND_FAIL(res);
 
     d3d_swapchain->Release();
     swapchain->Release();
