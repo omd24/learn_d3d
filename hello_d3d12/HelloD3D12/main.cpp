@@ -6,6 +6,8 @@
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 
+#define _DEBUG
+
 #if !defined(NDEBUG) && !defined(_DEBUG)
 #error "Define at least one."
 #elif defined(NDEBUG) && defined(_DEBUG)
@@ -74,7 +76,9 @@ runtimeobject.lib
 */
 
 #define SUCCEEDED(hr)   (((HRESULT)(hr)) >= 0)
+//#define SUCCEEDED_OPERATION(hr)   (((HRESULT)(hr)) == S_OK)
 #define FAILED(hr)      (((HRESULT)(hr)) < 0)
+//#define FAILED_OPERATION(hr)      (((HRESULT)(hr)) != S_OK)
 #define CHECK_AND_FAIL(hr)                          \
     if (FAILED(hr)) {                               \
         ::printf("[ERROR] " #hr "() failed. \n");   \
@@ -86,6 +90,12 @@ runtimeobject.lib
 #define ENABLE_DEBUG_LAYER 1
 #else
 #define ENABLE_DEBUG_LAYER 0
+#endif
+
+#if defined(_DEBUG)
+UINT compiler_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+UINT compiler_flags = 0;
 #endif
 
 int main () 
@@ -201,18 +211,40 @@ int main ()
         ::printf("render target %d width = %d, height = %d\n", i, (UINT)render_targets[i]->GetDesc().Width, (UINT)render_targets[i]->GetDesc().Height);
     }
 
+    // Create command allocator
     ID3D12CommandAllocator * d3d_cmd_allocator = nullptr;
     res = d3d_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&d3d_cmd_allocator));
-    // TODO(omid): fix check and fail 
-    //res = S_FALSE;
     CHECK_AND_FAIL(res);
 
+    // Create empty root signature
+    D3D12_ROOT_SIGNATURE_DESC root_desc = {};
+    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob * signature = nullptr;
+    ID3DBlob * error_blob = nullptr;
+    res = D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION::D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error_blob);
+    CHECK_AND_FAIL(res);
+
+    ID3D12RootSignature * root_signature = nullptr;
+    res = d3d_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&root_signature));
+    if (S_OK != res) {
+        ::printf("Could not create empty root signature!\n");
+        ::abort();
+    }
+
+
+    // cleanup
+    root_signature->Release();
+    if (error_blob)
+        error_blob->Release();
+    signature->Release();
     d3d_swapchain->Release();
     swapchain->Release();
     d3d_cmd_q->Release();
     d3d_device->Release();
     dxgi_factory->Release();
     debug_interface_dx->Release();
+
 
     // Loop 
     /*
