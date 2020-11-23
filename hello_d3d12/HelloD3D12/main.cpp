@@ -227,10 +227,7 @@ int main ()
 
     ID3D12RootSignature * root_signature = nullptr;
     res = d3d_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&root_signature));
-    if (S_OK != res) {
-        ::printf("Could not create empty root signature!\n");
-        ::abort();
-    }
+    CHECK_AND_FAIL(res);
 
     // Load and compile shaders
     wchar_t const * shaders_path = L"./shaders/basic.hlsl";
@@ -254,6 +251,55 @@ int main ()
             ps_err->Release();
         }
     }
+
+    // Create vertex-input-layout Elements
+    D3D12_INPUT_ELEMENT_DESC input_desc [2];
+    input_desc[0] = {};
+    input_desc[0].SemanticName = "SV_Position";
+    input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+    input_desc[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    
+    input_desc[1] = {};
+    input_desc[1].SemanticName = "COLOR";
+    input_desc[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    input_desc[1].AlignedByteOffset = 12; //?
+    input_desc[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
+    // Create pipeline state object
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
+    pso_desc.pRootSignature = root_signature;
+    pso_desc.VS.pShaderBytecode = vertex_shader->GetBufferPointer();
+    pso_desc.VS.BytecodeLength = vertex_shader->GetBufferSize();
+    pso_desc.PS.pShaderBytecode = pixel_shader->GetBufferPointer();
+    pso_desc.PS.BytecodeLength = pixel_shader->GetBufferSize();
+
+
+typedef struct D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+  ID3D12RootSignature                *pRootSignature;
+  D3D12_SHADER_BYTECODE              VS;
+  D3D12_SHADER_BYTECODE              PS;
+  D3D12_SHADER_BYTECODE              DS;
+  D3D12_SHADER_BYTECODE              HS;
+  D3D12_SHADER_BYTECODE              GS;
+  D3D12_STREAM_OUTPUT_DESC           StreamOutput;
+  D3D12_BLEND_DESC                   BlendState;
+  UINT                               SampleMask;
+  D3D12_RASTERIZER_DESC              RasterizerState;
+  D3D12_DEPTH_STENCIL_DESC           DepthStencilState;
+  D3D12_INPUT_LAYOUT_DESC            InputLayout;
+  D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue;
+  D3D12_PRIMITIVE_TOPOLOGY_TYPE      PrimitiveTopologyType;
+  UINT                               NumRenderTargets;
+  DXGI_FORMAT                        RTVFormats[8];
+  DXGI_FORMAT                        DSVFormat;
+  DXGI_SAMPLE_DESC                   SampleDesc;
+  UINT                               NodeMask;
+  D3D12_CACHED_PIPELINE_STATE        CachedPSO;
+  D3D12_PIPELINE_STATE_FLAGS         Flags;
+} D3D12_GRAPHICS_PIPELINE_STATE_DESC;
+
+
+
 
     // cleanup
     root_signature->Release();
