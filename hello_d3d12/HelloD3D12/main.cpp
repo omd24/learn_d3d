@@ -255,7 +255,7 @@ int main ()
     // Create vertex-input-layout Elements
     D3D12_INPUT_ELEMENT_DESC input_desc [2];
     input_desc[0] = {};
-    input_desc[0].SemanticName = "SV_Position";
+    input_desc[0].SemanticName = "POSITION";
     input_desc[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
     input_desc[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
     
@@ -266,40 +266,50 @@ int main ()
     input_desc[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 
     // Create pipeline state object
+
+    D3D12_BLEND_DESC blend_desc = {};
+    blend_desc.AlphaToCoverageEnable    = FALSE;
+    blend_desc.IndependentBlendEnable   = FALSE;
+    blend_desc.RenderTarget[0].BlendEnable           = FALSE;
+    blend_desc.RenderTarget[0].LogicOpEnable         = FALSE;
+    blend_desc.RenderTarget[0].SrcBlend              = D3D12_BLEND_ONE;
+    blend_desc.RenderTarget[0].DestBlend             = D3D12_BLEND_ZERO;
+    blend_desc.RenderTarget[0].BlendOp               = D3D12_BLEND_OP_ADD;
+    blend_desc.RenderTarget[0].SrcBlendAlpha         = D3D12_BLEND_ONE;
+    blend_desc.RenderTarget[0].DestBlendAlpha        = D3D12_BLEND_ZERO;
+    blend_desc.RenderTarget[0].BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+    blend_desc.RenderTarget[0].LogicOp               = D3D12_LOGIC_OP_NOOP;
+    blend_desc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_RASTERIZER_DESC rasterizer_desc = {};
+    rasterizer_desc.FillMode = D3D12_FILL_MODE_SOLID;
+    rasterizer_desc.CullMode = D3D12_CULL_MODE_BACK;
+    rasterizer_desc.FrontCounterClockwise = false;
+    rasterizer_desc.DepthClipEnable = TRUE;
+    rasterizer_desc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
     pso_desc.pRootSignature = root_signature;
     pso_desc.VS.pShaderBytecode = vertex_shader->GetBufferPointer();
     pso_desc.VS.BytecodeLength = vertex_shader->GetBufferSize();
     pso_desc.PS.pShaderBytecode = pixel_shader->GetBufferPointer();
     pso_desc.PS.BytecodeLength = pixel_shader->GetBufferSize();
+    pso_desc.BlendState = blend_desc;
+    pso_desc.SampleMask = UINT_MAX;
+    pso_desc.RasterizerState = rasterizer_desc;
+    pso_desc.DepthStencilState.StencilEnable = FALSE;
+    pso_desc.DepthStencilState.DepthEnable = FALSE;
+    pso_desc.InputLayout.pInputElementDescs = input_desc;
+    pso_desc.InputLayout.NumElements = _countof(input_desc);
+    pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE::D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso_desc.NumRenderTargets = 1;
+    pso_desc.RTVFormats[0] = DXGI_FORMAT::DXGI_FORMAT_B8G8R8A8_UNORM;
+    pso_desc.SampleDesc.Count = 1;
+    pso_desc.SampleDesc.Quality = 0;
 
-
-typedef struct D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-  ID3D12RootSignature                *pRootSignature;
-  D3D12_SHADER_BYTECODE              VS;
-  D3D12_SHADER_BYTECODE              PS;
-  D3D12_SHADER_BYTECODE              DS;
-  D3D12_SHADER_BYTECODE              HS;
-  D3D12_SHADER_BYTECODE              GS;
-  D3D12_STREAM_OUTPUT_DESC           StreamOutput;
-  D3D12_BLEND_DESC                   BlendState;
-  UINT                               SampleMask;
-  D3D12_RASTERIZER_DESC              RasterizerState;
-  D3D12_DEPTH_STENCIL_DESC           DepthStencilState;
-  D3D12_INPUT_LAYOUT_DESC            InputLayout;
-  D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue;
-  D3D12_PRIMITIVE_TOPOLOGY_TYPE      PrimitiveTopologyType;
-  UINT                               NumRenderTargets;
-  DXGI_FORMAT                        RTVFormats[8];
-  DXGI_FORMAT                        DSVFormat;
-  DXGI_SAMPLE_DESC                   SampleDesc;
-  UINT                               NodeMask;
-  D3D12_CACHED_PIPELINE_STATE        CachedPSO;
-  D3D12_PIPELINE_STATE_FLAGS         Flags;
-} D3D12_GRAPHICS_PIPELINE_STATE_DESC;
-
-
-
+    ID3D12PipelineState * d3d_pso = nullptr;
+    res = d3d_device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&d3d_pso));
+    CHECK_AND_FAIL(res);
 
     // cleanup
     root_signature->Release();
