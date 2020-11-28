@@ -6,8 +6,6 @@
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 
-#define _DEBUG
-
 #if !defined(NDEBUG) && !defined(_DEBUG)
 #error "Define at least one."
 #elif defined(NDEBUG) && defined(_DEBUG)
@@ -44,6 +42,8 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
+#include <dxgidebug.h>
 
 #define SDL_MAIN_HANDLED
 #include "SDL2/SDL.h"
@@ -104,10 +104,15 @@ int main ()
     SDL_Init(SDL_INIT_VIDEO);
 
     // Enable Debug Layer
+    UINT dxgiFactoryFlags = 0;
 #if ENABLE_DEBUG_LAYER > 0
     ID3D12Debug * debug_interface_dx = nullptr;
+    //ID3D12Debug1 * debug_controller = nullptr;
     if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface_dx)))) {
         debug_interface_dx->EnableDebugLayer();
+        //debug_interface_dx->QueryInterface(IID_PPV_ARGS(&debug_controller));
+        //debug_controller->SetEnableGPUBasedValidation(true); // -- not needed for now
+        dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
     }
 #endif
     // Create a Window
@@ -118,13 +123,12 @@ int main ()
 
     // Query Adapter (PhysicalDevice)
     IDXGIFactory * dxgi_factory = nullptr;
-    CHECK_AND_FAIL(CreateDXGIFactory(IID_PPV_ARGS(&dxgi_factory)));
+    CHECK_AND_FAIL(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgi_factory)));
 
     constexpr uint32_t MaxAdapters = 8;
     IDXGIAdapter * adapters[MaxAdapters] = {};
     IDXGIAdapter * pAdapter;
-    for (UINT i = 0; dxgi_factory->EnumAdapters(i, &pAdapter) != DXGI_ERROR_NOT_FOUND; ++i)
-    {
+    for (UINT i = 0; dxgi_factory->EnumAdapters(i, &pAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
         adapters[i] = pAdapter;
         DXGI_ADAPTER_DESC adapter_desc = {};
         ::printf("GPU Info [%d] :\n", i);
@@ -138,6 +142,13 @@ int main ()
     ID3D12Device * d3d_device = nullptr;
     auto res = D3D12CreateDevice(adapters[0], D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d_device));
     CHECK_AND_FAIL(res);
+
+    // Release adaptors
+    for (unsigned i = 0; i < MaxAdapters; ++i) {
+        if (adapters[i] != nullptr) {
+            adapters[i]->Release();
+        }
+    }
 
     // Create Command Queues
     D3D12_COMMAND_QUEUE_DESC cmd_q_desc = {};
@@ -182,6 +193,7 @@ int main ()
     res = dxgi_factory->CreateSwapChain(d3d_cmd_q, &swapchain_desc, &swapchain);
     CHECK_AND_FAIL(res);
 
+    // -- to get current backbuffer index
     IDXGISwapChain3 * d3d_swapchain = nullptr;
     res = swapchain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&d3d_swapchain);
     CHECK_AND_FAIL(res);
@@ -221,8 +233,8 @@ int main ()
     root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ID3DBlob * signature = nullptr;
-    ID3DBlob * error_blob = nullptr;
-    res = D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION::D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error_blob);
+    ID3DBlob * signature_error_blob = nullptr;
+    res = D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION::D3D_ROOT_SIGNATURE_VERSION_1, &signature, &signature_error_blob);
     CHECK_AND_FAIL(res);
 
     ID3D12RootSignature * root_signature = nullptr;
@@ -268,18 +280,18 @@ int main ()
     // Create pipeline state object
 
     D3D12_BLEND_DESC blend_desc = {};
-    blend_desc.AlphaToCoverageEnable    = FALSE;
-    blend_desc.IndependentBlendEnable   = FALSE;
-    blend_desc.RenderTarget[0].BlendEnable           = FALSE;
-    blend_desc.RenderTarget[0].LogicOpEnable         = FALSE;
-    blend_desc.RenderTarget[0].SrcBlend              = D3D12_BLEND_ONE;
-    blend_desc.RenderTarget[0].DestBlend             = D3D12_BLEND_ZERO;
-    blend_desc.RenderTarget[0].BlendOp               = D3D12_BLEND_OP_ADD;
-    blend_desc.RenderTarget[0].SrcBlendAlpha         = D3D12_BLEND_ONE;
-    blend_desc.RenderTarget[0].DestBlendAlpha        = D3D12_BLEND_ZERO;
-    blend_desc.RenderTarget[0].BlendOpAlpha          = D3D12_BLEND_OP_ADD;
-    blend_desc.RenderTarget[0].LogicOp               = D3D12_LOGIC_OP_NOOP;
-    blend_desc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    blend_desc.AlphaToCoverageEnable                    = FALSE;
+    blend_desc.IndependentBlendEnable                   = FALSE;
+    blend_desc.RenderTarget[0].BlendEnable              = FALSE;
+    blend_desc.RenderTarget[0].LogicOpEnable            = FALSE;
+    blend_desc.RenderTarget[0].SrcBlend                 = D3D12_BLEND_ONE;
+    blend_desc.RenderTarget[0].DestBlend                = D3D12_BLEND_ZERO;
+    blend_desc.RenderTarget[0].BlendOp                  = D3D12_BLEND_OP_ADD;
+    blend_desc.RenderTarget[0].SrcBlendAlpha            = D3D12_BLEND_ONE;
+    blend_desc.RenderTarget[0].DestBlendAlpha           = D3D12_BLEND_ZERO;
+    blend_desc.RenderTarget[0].BlendOpAlpha             = D3D12_BLEND_OP_ADD;
+    blend_desc.RenderTarget[0].LogicOp                  = D3D12_LOGIC_OP_NOOP;
+    blend_desc.RenderTarget[0].RenderTargetWriteMask    = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     D3D12_RASTERIZER_DESC rasterizer_desc = {};
     rasterizer_desc.FillMode = D3D12_FILL_MODE_SOLID;
@@ -311,19 +323,83 @@ int main ()
     res = d3d_device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&d3d_pso));
     CHECK_AND_FAIL(res);
 
+    // Create command list
+    ID3D12GraphicsCommandList * direct_cmd_list = nullptr;
+    res = d3d_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d_cmd_allocator, d3d_pso, IID_PPV_ARGS(&direct_cmd_list));
+    CHECK_AND_FAIL(res);
+
+    // -- close command list for now (nothing to record yet)
+    CHECK_AND_FAIL(direct_cmd_list->Close());
+
+    // -- create vertex buffer (VB) and copy vertex data to the VB
+
+    direct_cmd_list->Release();
+    d3d_pso->Release();
+
     // cleanup
+    if (ps_err) {
+        ps_err->Release();
+    }
+    pixel_shader->Release();
+    if (vs_err) {
+        vs_err->Release();
+    }
+    vertex_shader->Release();
+
     root_signature->Release();
-    if (error_blob)
-        error_blob->Release();
+    if (signature_error_blob)
+        signature_error_blob->Release();
     signature->Release();
+
+    d3d_cmd_allocator->Release();
+
+    for (unsigned i = 0; i < frame_count; ++i) {
+        render_targets[i]->Release();
+    }
+
+    d3d_heap->Release();
+
     d3d_swapchain->Release();
     swapchain->Release();
     d3d_cmd_q->Release();
     d3d_device->Release();
     dxgi_factory->Release();
-    debug_interface_dx->Release();
 
+    //debug_interface_dx->Release();
 
+    // -- advanced debugging and reporting live objects [from https://walbourn.github.io/dxgi-debug-device/]
+
+    typedef HRESULT (WINAPI * LPDXGIGETDEBUGINTERFACE)(REFIID, void ** );
+
+    //HMODULE dxgidebug_dll = LoadLibraryEx( L"dxgidebug_dll.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32 );
+    HMODULE dxgidebug_dll = LoadLibrary(L"DXGIDebug.dll");
+    if (dxgidebug_dll) {
+        auto dxgiGetDebugInterface = reinterpret_cast<LPDXGIGETDEBUGINTERFACE>(
+            reinterpret_cast<void*>(GetProcAddress(dxgidebug_dll, "DXGIGetDebugInterface")));
+
+        // -- working with dxgi_info_queue
+        /*
+        IDXGIInfoQueue * dxgiInfoQueue = nullptr;
+        DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgiInfoQueue)); 
+        if (dxgiInfoQueue) {
+            dxgiInfoQueue->SetBreakOnSeverity( DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, true );
+            dxgiInfoQueue->SetBreakOnSeverity( DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION, true );
+        }
+        */
+
+        IDXGIDebug1 * dxgi_debugger = nullptr;
+        DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgi_debugger));
+        dxgi_debugger->ReportLiveObjects(
+            DXGI_DEBUG_ALL,
+            DXGI_DEBUG_RLO_DETAIL
+            /* DXGI_DEBUG_RLO_FLAGS(DXGI_DEBUG_RLO_SUMMARY | DXGI_DEBUG_RLO_IGNORE_INTERNAL) */
+        );
+        dxgi_debugger->Release();
+        FreeLibrary(dxgidebug_dll);
+    }
+
+    SDL_DestroyWindow(wnd);
+    SDL_Quit();
     // Loop 
     /*
     * 
