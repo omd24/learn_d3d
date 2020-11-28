@@ -44,6 +44,7 @@
 #include <Windows.h>
 
 #include <dxgidebug.h>
+//#include <directxmath.h>
 
 #define SDL_MAIN_HANDLED
 #include "SDL2/SDL.h"
@@ -331,10 +332,87 @@ int main ()
     // -- close command list for now (nothing to record yet)
     CHECK_AND_FAIL(direct_cmd_list->Close());
 
-    // -- create vertex buffer (VB) and copy vertex data to the VB
+    // Create vertex buffer (VB)
 
+    // vertex data
+    struct Vertex {
+        DirectX::XMFLOAT3 position;
+        DirectX::XMFLOAT4 color;
+    };
+    float aspect_ratio = (float)width / (float)height;
 
+    Vertex v_red = {};
+    v_red.position.x = 0.0f;
+    v_red.position.y = 0.25f * aspect_ratio;
+    v_red.position.z = 0.0f;
+    v_red.color.x = 1.0f;
+    v_red.color.y = 0.0f;
+    v_red.color.z = 0.0f;
+    v_red.color.w = 1.0f;
 
+    Vertex v_green = {};
+    v_green.position.x = 0.25f;
+    v_green.position.y = -0.25f * aspect_ratio;
+    v_green.position.z = 0.0f;
+    v_green.color.x = 0.0f;
+    v_green.color.y = 1.0f;
+    v_green.color.z = 0.0f;
+    v_green.color.w = 1.0f;
+
+    Vertex v_blue = {};
+    v_blue.position.x = -0.25f;
+    v_blue.position.y = -0.25f * aspect_ratio;
+    v_blue.position.z = 0.0f;
+    v_blue.color.x = 0.0f;
+    v_blue.color.y = 0.0f;
+    v_blue.color.z = 1.0f;
+    v_blue.color.w = 1.0f;
+
+    Vertex vertices[] = {v_red, v_green, v_blue};
+    size_t vb_size = sizeof(vertices);
+
+    // NOTE(omid): An upload heap is used here for code simplicity 
+    //      and because there are very few verts to actually transfer.
+    // NOTE(omid): using upload heaps to transfer static data such as vb(s) is not recommended.
+    //      Every time the GPU needs it, the upload heap will be marshalled over. 
+    //      Read up on Default Heap usage.
+
+    D3D12_HEAP_PROPERTIES heap_props = {};
+    heap_props.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heap_props.CreationNodeMask = 1U;
+    heap_props.VisibleNodeMask = 1U;
+
+    D3D12_RESOURCE_DESC rsc_desc = {};
+    rsc_desc.Dimension = D3D12_RESOURCE_DIMENSION::D3D12_RESOURCE_DIMENSION_BUFFER;
+    rsc_desc.Width = vb_size;
+    rsc_desc.Height = 1;
+    rsc_desc.DepthOrArraySize = 1;
+    rsc_desc.MipLevels = 1;
+    rsc_desc.SampleDesc.Count = 1;
+    rsc_desc.SampleDesc.Quality = 0;
+    rsc_desc.Layout = D3D12_TEXTURE_LAYOUT::D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource * vertex_buffer = nullptr;
+    res = d3d_device->CreateCommittedResource(
+        &heap_props, D3D12_HEAP_FLAG_NONE, &rsc_desc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr, IID_PPV_ARGS(&vertex_buffer)
+    );
+    CHECK_AND_FAIL(res);
+
+    // Copy vertex data to vertex buffer
+    uint8_t * vertex_data = nullptr;
+    D3D12_RANGE mem_range = {};
+    mem_range.Begin = mem_range.End = 0; // We do not intend to read from this resource on the CPU.
+    vertex_buffer->Map(0, &mem_range, reinterpret_cast<void **>(&vertex_data));
+    memcpy(vertex_data, vertices, vb_size);
+    vertex_buffer->Unmap(0, nullptr /*aka full-range*/);
+
+    // Initialize the vertex buffer view (vbv)
+    D3D12_VERTEX_BUFFER_VIEW vbv = {};
+    vbv.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
+    vbv.SizeInBytes = vb_size;
+    vbv.StrideInBytes = sizeof(Vertex);
 
     // Loop 
     /*
@@ -355,6 +433,8 @@ int main ()
 
 
     // -- Cleanup
+
+    vertex_buffer->Release();
 
     direct_cmd_list->Release();
     d3d_pso->Release();
@@ -381,7 +461,7 @@ int main ()
     d3d_device->Release();
     dxgi_factory->Release();
 
-    //debug_interface_dx->Release();
+    debug_interface_dx->Release();
 
     // -- advanced debugging and reporting live objects [from https://walbourn.github.io/dxgi-debug-device/]
 
