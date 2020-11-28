@@ -333,17 +333,33 @@ int main ()
 
     // -- create vertex buffer (VB) and copy vertex data to the VB
 
+
+
+
+    // Loop 
+    /*
+    * 
+        // Wait for fences
+        CHECK(YRB::WaitForFences(&fences_framedone[frame_index], 1));
+
+        - SwapChain -> Give me the next image to render to.
+
+        - Render to Image
+
+        - Present SwapChain Image
+    */
+
+
+    // Other stuff -> Shaders, DescriptorManagement (DescriptorHeap, RootSignature), PSO, Sync Objects, Buffers, Textures, ...
+
+
+
+    // -- Cleanup
+
     direct_cmd_list->Release();
     d3d_pso->Release();
 
-    // cleanup
-    if (ps_err) {
-        ps_err->Release();
-    }
     pixel_shader->Release();
-    if (vs_err) {
-        vs_err->Release();
-    }
     vertex_shader->Release();
 
     root_signature->Release();
@@ -400,21 +416,6 @@ int main ()
 
     SDL_DestroyWindow(wnd);
     SDL_Quit();
-    // Loop 
-    /*
-    * 
-        // Wait for fences
-        CHECK(YRB::WaitForFences(&fences_framedone[frame_index], 1));
-
-        - SwapChain -> Give me the next image to render to.
-
-        - Render to Image
-
-        - Present SwapChain Image
-    */
-
-
-    // Other stuff -> Shaders, DescriptorManagement (DescriptorHeap, RootSignature), PSO, Sync Objects, Buffers, Textures, ...
     
     return 0;
 }
