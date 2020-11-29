@@ -414,6 +414,67 @@ int main ()
     vbv.SizeInBytes = vb_size;
     vbv.StrideInBytes = sizeof(Vertex);
 
+    // Create fence
+    
+    // create synchronization objects and wait until assets have been uploaded to the GPU.
+
+    ID3D12Fence * d3d_fence = nullptr;
+    res = d3d_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&d3d_fence));
+    CHECK_AND_FAIL(res);
+
+    UINT64 fence_value = 1;
+
+    // Create an event handle to use for frame synchronization.
+    HANDLE fence_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if(nullptr == fence_event) {
+        // map the error code to an HRESULT value.
+        res = HRESULT_FROM_WIN32(GetLastError());
+        CHECK_AND_FAIL(res);
+    }
+
+
+    // NOTE(omid):  We wait for the command list to execute; we are reusing the same command 
+    //              list in our main loop but for now, we just want to wait for setup to 
+    //              complete before continuing.
+
+    // -- Caveat emptor:
+    // NOTE(omid):  WAITING FOR THE FRAME TO COMPLETE BEFORE CONTINUING IS NOT BEST PRACTICE.
+    //              This is code implemented as such for simplicity. The D3D12HelloFrameBuffering
+    //              sample illustrates how to use fences for efficient resource usage and to
+    //              maximize GPU utilization.
+
+    // -- 1. signal and increment the fence value:
+    UINT64 fence = fence_value;
+    res = d3d_cmd_q->Signal(d3d_fence, fence);
+    CHECK_AND_FAIL(res);
+    ++fence_value;
+
+    // -- 2. wait until the previous frame is finished
+    if (d3d_fence->GetCompletedValue() < fence) {
+        res = d3d_fence->SetEventOnCompletion(fence, fence_event);
+        CHECK_AND_FAIL(res);
+        WaitForSingleObject(fence_event, INFINITE /*return only when the object is signaled*/ );
+    }
+
+    // -- 3. update frame index
+    frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
+
+
+    // OnUpdate()
+    // -- nothing is updated
+
+
+    // OnRender
+    // NOTE(omid):  Rendering involves
+    //              populating the command list, 
+    //              then the command list can be executed and 
+    //              then next buffer in the swap chain is presented (present the frame),
+
+    // OnDestroy
+    //              wait for the gpu to finish (to be done with all resources)
+    //              close handle (fence_event)
+
+
     // Loop 
     /*
     * 
@@ -433,6 +494,8 @@ int main ()
 
 
     // -- Cleanup
+
+    d3d_fence->Release();
 
     vertex_buffer->Release();
 
