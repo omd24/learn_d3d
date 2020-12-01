@@ -2,9 +2,13 @@
 
 // DirectX 12 specific headers.
 #include <d3d12.h>
+
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
+
+// -- uncomment below to use CHelper structs
+//#include "d3dx12.h"
 
 #if !defined(NDEBUG) && !defined(_DEBUG)
 #error "Define at least one."
@@ -215,12 +219,19 @@ int main ()
     ::printf("size of rtv descriptor heap (to increment handle): %d\n", rtv_descriptor_size);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle_start = d3d_heap->GetCPUDescriptorHandleForHeapStart();
+    // -- using Chelper structs
+    //CD3DX12_CPU_DESCRIPTOR_HANDLE rtv_handle_start(d3d_heap->GetCPUDescriptorHandleForHeapStart());
     for (UINT i = 0; i < frame_count; ++i) {
         res = d3d_swapchain->GetBuffer(i, IID_PPV_ARGS(&render_targets[i]));
         CHECK_AND_FAIL(res);
+        
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
+        //cpu_handle.ptr = SIZE_T(INT64(rtv_handle_start) + INT64(1) * INT64(rtv_descriptor_size));
         cpu_handle.ptr = rtv_handle_start.ptr + ((UINT64)i * rtv_descriptor_size);
         d3d_device->CreateRenderTargetView(render_targets[i], nullptr, cpu_handle);
+        
+        //d3d_device->CreateRenderTargetView(render_targets[i], nullptr, rtv_handle_start);
+        //rtv_handle_start.Offset(1, rtv_descriptor_size);
         ::printf("render target %d width = %d, height = %d\n", i, (UINT)render_targets[i]->GetDesc().Width, (UINT)render_targets[i]->GetDesc().Height);
     }
 
@@ -316,7 +327,7 @@ int main ()
     pso_desc.InputLayout.NumElements = _countof(input_desc);
     pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE::D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso_desc.NumRenderTargets = 1;
-    pso_desc.RTVFormats[0] = DXGI_FORMAT::DXGI_FORMAT_B8G8R8A8_UNORM;
+    pso_desc.RTVFormats[0] = DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM;
     pso_desc.SampleDesc.Count = 1;
     pso_desc.SampleDesc.Quality = 0;
 
@@ -411,7 +422,7 @@ int main ()
     // Initialize the vertex buffer view (vbv)
     D3D12_VERTEX_BUFFER_VIEW vbv = {};
     vbv.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
-    vbv.SizeInBytes = vb_size;
+    vbv.SizeInBytes = (UINT)vb_size;
     vbv.StrideInBytes = sizeof(Vertex);
 
     // Create fence
@@ -463,12 +474,86 @@ int main ()
     // OnUpdate()
     // -- nothing is updated
 
+    // OnRender()
+
+    // Populate command list
+    
+    // -- reset cmd_allocator and cmd_list
+    CHECK_AND_FAIL(d3d_cmd_allocator->Reset());
+    res = direct_cmd_list->Reset(d3d_cmd_allocator, d3d_pso);
+    CHECK_AND_FAIL(res);
+
+    // -- set root_signature, viewport and scissor
+    direct_cmd_list->SetGraphicsRootSignature(root_signature);
+    D3D12_VIEWPORT viewport = {};
+    D3D12_RECT scissor_rect = {};
+    direct_cmd_list->RSSetViewports(1, &viewport);
+    direct_cmd_list->RSSetScissorRects(1, &scissor_rect);
+
+    // -- indicate that the backbuffer will be used as the render target
+    D3D12_RESOURCE_BARRIER barrier1 = {};
+    barrier1.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier1.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier1.Transition.pResource = render_targets[frame_index];
+    barrier1.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier1.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier1.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    direct_cmd_list->ResourceBarrier(1, &barrier1);
+
+    
+    // -- get CPU descriptor handle that represents the start of the heap
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle = d3d_heap->GetCPUDescriptorHandleForHeapStart();
+    // -- apply initial offset
+    cpu_descriptor_handle.ptr = SIZE_T(INT64(cpu_descriptor_handle.ptr) + INT64(frame_index) * INT64(rtv_descriptor_size));
+    direct_cmd_list->OMSetRenderTargets(1, &cpu_descriptor_handle, FALSE, nullptr);
+    
+    // -- using Chelper structs
+    //CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(d3d_heap->GetCPUDescriptorHandleForHeapStart(), frame_index, rtv_descriptor_size);
+    //direct_cmd_list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // -- record commands
+    
+    // 1 - set all the elements in a render target to one value.
+    float clear_colors [] = {0.0f, 0.2f, 0.4f, 1.0f};
+    direct_cmd_list->ClearRenderTargetView(cpu_descriptor_handle, clear_colors, 0, nullptr);
+
+    // 2 - set primitive type and data order that describes input data for the input assembler stage.
+    direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // 3 - set the CPU descriptor handle for the vertex buffers (one vb for now)
+    direct_cmd_list->IASetVertexBuffers(0 , 1, &vbv);
+
+    // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
+    direct_cmd_list->DrawInstanced(
+        3,  /* number of vertices to draw.                                                          */
+        1,  /* number of instances to draw.                                                         */
+        0,  /* index of the first vertex                                                            */
+        0   /* a value added to each index before reading per-instance data from a vertex buffer    */
+    );
+
+    // -- indicate that the backbuffer will now be used to present
+    D3D12_RESOURCE_BARRIER barrier2 = {};
+    barrier2.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier2.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier2.Transition.pResource = render_targets[frame_index];
+    barrier2.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier2.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier2.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+
+    direct_cmd_list->ResourceBarrier(1 , &barrier2);
+
+    // -- finish populating command list
+    direct_cmd_list->Close();
+
 
     // OnRender
     // NOTE(omid):  Rendering involves
     //              populating the command list, 
     //              then the command list can be executed and 
     //              then next buffer in the swap chain is presented (present the frame),
+
+
 
     // OnDestroy
     //              wait for the gpu to finish (to be done with all resources)
