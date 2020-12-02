@@ -105,15 +105,46 @@ UINT compiler_flags = 0;
 
 #define ARRAY_COUNT(arr)   sizeof(arr)/sizeof(arr[0])
 
+#define FRAME_COUNT 2               // Use double-buffering
+struct D3DRenderContext {
+    
+    // Display data
+    UINT width;
+    UINT height;
+    float aspect_ratio;
+
+    // Pipeline stuff
+    D3D12_VIEWPORT                  viewport;
+    D3D12_RECT                      scissor_rect;
+    IDXGISwapChain3 *               swapchain3;
+    IDXGISwapChain *                swapchain;
+    ID3D12Device *                  device;
+    ID3D12Resource *                render_targets [FRAME_COUNT];
+    ID3D12CommandAllocator *        cmd_allocator;
+    ID3D12CommandQueue *            cmd_queue;
+    ID3D12RootSignature *           root_signature;
+    ID3D12DescriptorHeap *          rtv_heap;
+    ID3D12PipelineState *           pso;
+    ID3D12GraphicsCommandList *     direct_cmd_list;
+    UINT                            rtv_descriptor_size;
+
+    // App resources
+    ID3D12Resource *                vertex_buffer;
+    D3D12_VERTEX_BUFFER_VIEW        vb_view;
+
+    // Synchronization stuff
+    UINT                            frame_index;
+    HANDLE                          fence_event;
+    ID3D12Fence *                   fence;
+    UINT64                          fence_value;
+
+};
+struct Vertex {
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT4 color;
+};
 static HRESULT
-wait_for_previous_frame(
-    UINT64 * fence_value,
-    ID3D12CommandQueue ** d3d_cmd_q,
-    ID3D12Fence ** d3d_fence,
-    IDXGISwapChain3 * d3d_swapchain,
-    HANDLE fence_event,
-    UINT * frame_index
-) {
+wait_for_previous_frame (D3DRenderContext * render_ctx) {
     // NOTE(omid):  We wait for the command list to execute; we are reusing the same command 
     //              list in our main loop but for now, we just want to wait for setup to 
     //              complete before continuing.
@@ -127,98 +158,72 @@ wait_for_previous_frame(
     HRESULT ret = E_FAIL;
 
     // -- 1. signal and increment the fence value:
-    UINT64 fence = *fence_value;
-    ret = (*d3d_cmd_q)->Signal(*d3d_fence, fence);
+    UINT64 curr_fence_val = render_ctx->fence_value;
+    ret = render_ctx->cmd_queue->Signal(render_ctx->fence, curr_fence_val);
     CHECK_AND_FAIL(ret);
-    ++(*fence_value);
+    ++(render_ctx->fence_value);
 
     // -- 2. wait until the previous frame is finished
-    if ((*d3d_fence)->GetCompletedValue() < fence) {
-        ret = (*d3d_fence)->SetEventOnCompletion(fence, fence_event);
+    if (render_ctx->fence->GetCompletedValue() < curr_fence_val) {
+        ret = render_ctx->fence->SetEventOnCompletion(curr_fence_val, render_ctx->fence_event);
         CHECK_AND_FAIL(ret);
-        WaitForSingleObject(fence_event, INFINITE /*return only when the object is signaled*/);
+        WaitForSingleObject(render_ctx->fence_event, INFINITE /*return only when the object is signaled*/);
     }
 
     // -- 3. update frame index
-    *frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
+    render_ctx->frame_index = render_ctx->swapchain3->GetCurrentBackBufferIndex();
 
     return ret;
 }
 static HRESULT
-render_something (
-    ID3D12CommandAllocator ** cmd_allocator,
-    ID3D12PipelineState * pso,
-    ID3D12GraphicsCommandList ** cmd_list,
-    ID3D12RootSignature * root_signature,
-    ID3D12Resource * render_targets [],
-    UINT frame_index,
-    ID3D12DescriptorHeap * descriptor_heap,
-    UINT rtv_descriptor_size,
-    D3D12_VERTEX_BUFFER_VIEW * vbv,
-    ID3D12CommandQueue * cmd_queue,
-    IDXGISwapChain * swapchain
-) {
+render_triangle (D3DRenderContext * render_ctx) {
     
     HRESULT ret = E_FAIL;
 
     // Populate command list
     
     // -- reset cmd_allocator and cmd_list
-    CHECK_AND_FAIL((*cmd_allocator)->Reset());
-    ret = (*cmd_list)->Reset(*cmd_allocator, pso);
+    CHECK_AND_FAIL(render_ctx->cmd_allocator->Reset());
+    ret = render_ctx->direct_cmd_list->Reset(render_ctx->cmd_allocator, render_ctx->pso);
     CHECK_AND_FAIL(ret);
 
     // -- set root_signature, viewport and scissor
-    (*cmd_list)->SetGraphicsRootSignature(root_signature);
-    D3D12_VIEWPORT viewport = {};
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.Width = 1280;
-    viewport.Height = 720;
-    D3D12_RECT scissor_rect = {};
-    scissor_rect.left = 0;
-    scissor_rect.top = 0;
-    scissor_rect.right = 1280;
-    scissor_rect.bottom = 720;
-    (*cmd_list)->RSSetViewports(1, &viewport);
-    (*cmd_list)->RSSetScissorRects(1, &scissor_rect);
+    render_ctx->direct_cmd_list->SetGraphicsRootSignature(render_ctx->root_signature);
+
+    render_ctx->direct_cmd_list->RSSetViewports(1, &render_ctx->viewport);
+    render_ctx->direct_cmd_list->RSSetScissorRects(1, &render_ctx->scissor_rect);
 
     // -- indicate that the backbuffer will be used as the render target
     D3D12_RESOURCE_BARRIER barrier1 = {};
     barrier1.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier1.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier1.Transition.pResource = render_targets[frame_index];
+    barrier1.Transition.pResource = render_ctx->render_targets[render_ctx->frame_index];
     barrier1.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier1.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier1.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
-    (*cmd_list)->ResourceBarrier(1, &barrier1);
-
+    render_ctx->direct_cmd_list->ResourceBarrier(1, &barrier1);
     
     // -- get CPU descriptor handle that represents the start of the heap
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle = descriptor_heap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle = render_ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart();
     // -- apply initial offset
-    cpu_descriptor_handle.ptr = SIZE_T(INT64(cpu_descriptor_handle.ptr) + INT64(frame_index) * INT64(rtv_descriptor_size));
-    (*cmd_list)->OMSetRenderTargets(1, &cpu_descriptor_handle, FALSE, nullptr);
+    cpu_descriptor_handle.ptr = SIZE_T(INT64(cpu_descriptor_handle.ptr) + INT64(render_ctx->frame_index) * INT64(render_ctx->rtv_descriptor_size));
+    render_ctx->direct_cmd_list->OMSetRenderTargets(1, &cpu_descriptor_handle, FALSE, nullptr);
     
-    // -- using Chelper structs
-    //CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(descriptor_heap->GetCPUDescriptorHandleForHeapStart(), frame_index, rtv_descriptor_size);
-    //cmd_list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
     // -- record commands
     
     // 1 - set all the elements in a render target to one value.
     float clear_colors [] = {0.0f, 0.2f, 0.4f, 1.0f};
-    (*cmd_list)->ClearRenderTargetView(cpu_descriptor_handle, clear_colors, 0, nullptr);
+    render_ctx->direct_cmd_list->ClearRenderTargetView(cpu_descriptor_handle, clear_colors, 0, nullptr);
 
     // 2 - set primitive type and data order that describes input data for the input assembler stage.
-    (*cmd_list)->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    render_ctx->direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // 3 - set the CPU descriptor handle for the vertex buffers (one vb for now)
-    (*cmd_list)->IASetVertexBuffers(0 , 1, vbv);
+    render_ctx->direct_cmd_list->IASetVertexBuffers(0 , 1, &render_ctx->vb_view);
 
     // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
-    (*cmd_list)->DrawInstanced(
+    render_ctx->direct_cmd_list->DrawInstanced(
         3,  /* number of vertices to draw.                                                          */
         1,  /* number of instances to draw.                                                         */
         0,  /* index of the first vertex                                                            */
@@ -229,27 +234,59 @@ render_something (
     D3D12_RESOURCE_BARRIER barrier2 = {};
     barrier2.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier2.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier2.Transition.pResource = render_targets[frame_index];
+    barrier2.Transition.pResource = render_ctx->render_targets[render_ctx->frame_index];
     barrier2.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier2.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier2.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
 
-    (*cmd_list)->ResourceBarrier(1 , &barrier2);
+    render_ctx->direct_cmd_list->ResourceBarrier(1 , &barrier2);
 
     // -- finish populating command list
-    (*cmd_list)->Close();
+    render_ctx->direct_cmd_list->Close();
 
-    ID3D12CommandList * cmd_lists [] = {*cmd_list};
-    cmd_queue->ExecuteCommandLists(1, cmd_lists);
+    ID3D12CommandList * cmd_lists [] = {render_ctx->direct_cmd_list};
+    render_ctx->cmd_queue->ExecuteCommandLists(ARRAY_COUNT(cmd_lists), cmd_lists);
 
-    swapchain->Present(1 /*sync interval*/, 0 /*present flag*/);
+    render_ctx->swapchain->Present(1 /*sync interval*/, 0 /*present flag*/);
 
     return ret;
 }
-int main () {
-    // SDL_Init
-    SDL_Init(SDL_INIT_VIDEO);
+static void
+create_triangle_vertices (float aspect_ratio, Vertex out_vertices []) {
+    Vertex v_red = {};
+    v_red.position.x = 0.0f;
+    v_red.position.y = 0.25f * aspect_ratio;
+    v_red.position.z = 0.0f;
+    v_red.color.x = 1.0f;
+    v_red.color.y = 0.0f;
+    v_red.color.z = 0.0f;
+    v_red.color.w = 1.0f;
 
+    Vertex v_green = {};
+    v_green.position.x = 0.25f;
+    v_green.position.y = -0.25f * aspect_ratio;
+    v_green.position.z = 0.0f;
+    v_green.color.x = 0.0f;
+    v_green.color.y = 1.0f;
+    v_green.color.z = 0.0f;
+    v_green.color.w = 1.0f;
+
+    Vertex v_blue = {};
+    v_blue.position.x = -0.25f;
+    v_blue.position.y = -0.25f * aspect_ratio;
+    v_blue.position.z = 0.0f;
+    v_blue.color.x = 0.0f;
+    v_blue.color.y = 0.0f;
+    v_blue.color.z = 1.0f;
+    v_blue.color.w = 1.0f;
+
+    out_vertices[0] = v_red;
+    out_vertices[1] = v_green;
+    out_vertices[2] = v_blue;
+}
+
+int
+main () {
     // Enable Debug Layer
     UINT dxgiFactoryFlags = 0;
 #if ENABLE_DEBUG_LAYER > 0
@@ -262,8 +299,24 @@ int main () {
         dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
     }
 #endif
-    // Create a Window
-    SDL_Window * wnd = SDL_CreateWindow("LearningD3D12", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+
+    // ========================================================================================================
+    // -- Initialization
+
+    D3DRenderContext render_ctx = {.width = 1280, .height = 720};
+    render_ctx.aspect_ratio = (float)render_ctx.width / (float)render_ctx.height;
+    render_ctx.viewport.TopLeftX = 0;
+    render_ctx.viewport.TopLeftY = 0;
+    render_ctx.viewport.Width = (float)render_ctx.width;
+    render_ctx.viewport.Height = (float)render_ctx.height;
+    render_ctx.scissor_rect.left = 0;
+    render_ctx.scissor_rect.top = 0;
+    render_ctx.scissor_rect.right = render_ctx.width;
+    render_ctx.scissor_rect.bottom = render_ctx.height;
+
+
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window * wnd = SDL_CreateWindow("LearningD3D12", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, render_ctx.width, render_ctx.height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if(nullptr == wnd) {
         ::abort();
     }
@@ -286,8 +339,7 @@ int main () {
     } // WARP -> Windows Advanced Rasterization ...
 
     // Create Logical Device
-    ID3D12Device * d3d_device = nullptr;
-    auto res = D3D12CreateDevice(adapters[0], D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d_device));
+    auto res = D3D12CreateDevice(adapters[0], D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&render_ctx.device));
     CHECK_AND_FAIL(res);
 
     // Release adaptors
@@ -301,20 +353,12 @@ int main () {
     D3D12_COMMAND_QUEUE_DESC cmd_q_desc = {};
     cmd_q_desc.Type = D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT;
     cmd_q_desc.Flags = D3D12_COMMAND_QUEUE_FLAGS::D3D12_COMMAND_QUEUE_FLAG_NONE;
-    ID3D12CommandQueue * d3d_cmd_q = nullptr;
-    res = d3d_device->CreateCommandQueue(&cmd_q_desc, IID_PPV_ARGS(&d3d_cmd_q));
+    res = render_ctx.device->CreateCommandQueue(&cmd_q_desc, IID_PPV_ARGS(&render_ctx.cmd_queue));
     CHECK_AND_FAIL(res);
 
-    // -- data
-    UINT width = 1280;
-    UINT height = 720;
-    UINT const frame_count = 2;   // Use double-buffering
-    UINT rtv_descriptor_size = 0;
-    ID3D12Resource * render_targets [frame_count];
-
     DXGI_MODE_DESC backbuffer_desc = {};
-    backbuffer_desc.Width = 1280;
-    backbuffer_desc.Height = 720;
+    backbuffer_desc.Width = render_ctx.width;
+    backbuffer_desc.Height = render_ctx.height;
     backbuffer_desc.Format = DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM;
 
     DXGI_SAMPLE_DESC sampler_desc = {};
@@ -336,50 +380,39 @@ int main () {
     swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapchain_desc.Flags = DXGI_SWAP_CHAIN_FLAG::DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    IDXGISwapChain * swapchain = nullptr;
-    res = dxgi_factory->CreateSwapChain(d3d_cmd_q, &swapchain_desc, &swapchain);
+    res = dxgi_factory->CreateSwapChain(render_ctx.cmd_queue, &swapchain_desc, &render_ctx.swapchain);
     CHECK_AND_FAIL(res);
 
     // -- to get current backbuffer index
-    IDXGISwapChain3 * d3d_swapchain = nullptr;
-    res = swapchain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&d3d_swapchain);
+    res = render_ctx.swapchain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&render_ctx.swapchain3);
     CHECK_AND_FAIL(res);
-    UINT frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
-    ::printf("The current frame index is %d\n", frame_index);
+    render_ctx.frame_index = render_ctx.swapchain3->GetCurrentBackBufferIndex();
+    ::printf("The current frame index is %d\n", render_ctx.frame_index);
 
     // Create Render Target View Descriptor Heap
     D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc = {};
     descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    descriptor_heap_desc.NumDescriptors = frame_count;
+    descriptor_heap_desc.NumDescriptors = FRAME_COUNT;
     descriptor_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    ID3D12DescriptorHeap * d3d_heap = nullptr;
-    res = d3d_device->CreateDescriptorHeap(&descriptor_heap_desc, IID_PPV_ARGS(&d3d_heap));
+    res = render_ctx.device->CreateDescriptorHeap(&descriptor_heap_desc, IID_PPV_ARGS(&render_ctx.rtv_heap));
     CHECK_AND_FAIL(res);
 
-    rtv_descriptor_size = d3d_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    ::printf("size of rtv descriptor heap (to increment handle): %d\n", rtv_descriptor_size);
-
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle_start = d3d_heap->GetCPUDescriptorHandleForHeapStart();
-    // -- using Chelper structs
-    //CD3DX12_CPU_DESCRIPTOR_HANDLE rtv_handle_start(d3d_heap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < frame_count; ++i) {
-        res = d3d_swapchain->GetBuffer(i, IID_PPV_ARGS(&render_targets[i]));
+    render_ctx.rtv_descriptor_size = render_ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    ::printf("size of rtv descriptor heap (to increment handle): %d\n", render_ctx.rtv_descriptor_size);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle_start = render_ctx.rtv_heap->GetCPUDescriptorHandleForHeapStart();
+    for (UINT i = 0; i < FRAME_COUNT; ++i) {
+        res = render_ctx.swapchain3->GetBuffer(i, IID_PPV_ARGS(&render_ctx.render_targets[i]));
         CHECK_AND_FAIL(res);
         
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
         //cpu_handle.ptr = SIZE_T(INT64(rtv_handle_start) + INT64(1) * INT64(rtv_descriptor_size));
-        cpu_handle.ptr = rtv_handle_start.ptr + ((UINT64)i * rtv_descriptor_size);
-        d3d_device->CreateRenderTargetView(render_targets[i], nullptr, cpu_handle);
-        
-        //d3d_device->CreateRenderTargetView(render_targets[i], nullptr, rtv_handle_start);
-        //rtv_handle_start.Offset(1, rtv_descriptor_size);
-        ::printf("render target %d width = %d, height = %d\n", i, (UINT)render_targets[i]->GetDesc().Width, (UINT)render_targets[i]->GetDesc().Height);
+        cpu_handle.ptr = rtv_handle_start.ptr + ((UINT64)i * render_ctx.rtv_descriptor_size);
+        render_ctx.device->CreateRenderTargetView(render_ctx.render_targets[i], nullptr, cpu_handle);
     }
 
     // Create command allocator
-    ID3D12CommandAllocator * d3d_cmd_allocator = nullptr;
-    res = d3d_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&d3d_cmd_allocator));
+    res = render_ctx.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_ctx.cmd_allocator));
     CHECK_AND_FAIL(res);
 
     // Create empty root signature
@@ -391,8 +424,7 @@ int main () {
     res = D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION::D3D_ROOT_SIGNATURE_VERSION_1, &signature, &signature_error_blob);
     CHECK_AND_FAIL(res);
 
-    ID3D12RootSignature * root_signature = nullptr;
-    res = d3d_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&root_signature));
+    res = render_ctx.device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&render_ctx.root_signature));
     CHECK_AND_FAIL(res);
 
     // Load and compile shaders
@@ -455,7 +487,7 @@ int main () {
     rasterizer_desc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
-    pso_desc.pRootSignature = root_signature;
+    pso_desc.pRootSignature = render_ctx.root_signature;
     pso_desc.VS.pShaderBytecode = vertex_shader->GetBufferPointer();
     pso_desc.VS.BytecodeLength = vertex_shader->GetBufferSize();
     pso_desc.PS.pShaderBytecode = pixel_shader->GetBufferPointer();
@@ -473,55 +505,21 @@ int main () {
     pso_desc.SampleDesc.Count = 1;
     pso_desc.SampleDesc.Quality = 0;
 
-    ID3D12PipelineState * d3d_pso = nullptr;
-    res = d3d_device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&d3d_pso));
+    res = render_ctx.device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&render_ctx.pso));
     CHECK_AND_FAIL(res);
 
     // Create command list
-    ID3D12GraphicsCommandList * direct_cmd_list = nullptr;
-    res = d3d_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d_cmd_allocator, d3d_pso, IID_PPV_ARGS(&direct_cmd_list));
+    res = render_ctx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_ctx.cmd_allocator, render_ctx.pso, IID_PPV_ARGS(&render_ctx.direct_cmd_list));
     CHECK_AND_FAIL(res);
 
     // -- close command list for now (nothing to record yet)
-    CHECK_AND_FAIL(direct_cmd_list->Close());
+    CHECK_AND_FAIL(render_ctx.direct_cmd_list->Close());
 
     // Create vertex buffer (VB)
 
     // vertex data
-    struct Vertex {
-        DirectX::XMFLOAT3 position;
-        DirectX::XMFLOAT4 color;
-    };
-    float aspect_ratio = (float)width / (float)height;
-
-    Vertex v_red = {};
-    v_red.position.x = 0.0f;
-    v_red.position.y = 0.25f * aspect_ratio;
-    v_red.position.z = 0.0f;
-    v_red.color.x = 1.0f;
-    v_red.color.y = 0.0f;
-    v_red.color.z = 0.0f;
-    v_red.color.w = 1.0f;
-
-    Vertex v_green = {};
-    v_green.position.x = 0.25f;
-    v_green.position.y = -0.25f * aspect_ratio;
-    v_green.position.z = 0.0f;
-    v_green.color.x = 0.0f;
-    v_green.color.y = 1.0f;
-    v_green.color.z = 0.0f;
-    v_green.color.w = 1.0f;
-
-    Vertex v_blue = {};
-    v_blue.position.x = -0.25f;
-    v_blue.position.y = -0.25f * aspect_ratio;
-    v_blue.position.z = 0.0f;
-    v_blue.color.x = 0.0f;
-    v_blue.color.y = 0.0f;
-    v_blue.color.z = 1.0f;
-    v_blue.color.w = 1.0f;
-
-    Vertex vertices[] = {v_red, v_green, v_blue};
+    Vertex vertices [3] = {};
+    create_triangle_vertices(render_ctx.aspect_ratio, vertices);
     size_t vb_size = sizeof(vertices);
 
     // NOTE(omid): An upload heap is used here for code simplicity 
@@ -545,11 +543,10 @@ int main () {
     rsc_desc.SampleDesc.Quality = 0;
     rsc_desc.Layout = D3D12_TEXTURE_LAYOUT::D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    ID3D12Resource * vertex_buffer = nullptr;
-    res = d3d_device->CreateCommittedResource(
+    res = render_ctx.device->CreateCommittedResource(
         &heap_props, D3D12_HEAP_FLAG_NONE, &rsc_desc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr, IID_PPV_ARGS(&vertex_buffer)
+        nullptr, IID_PPV_ARGS(&render_ctx.vertex_buffer)
     );
     CHECK_AND_FAIL(res);
 
@@ -557,38 +554,33 @@ int main () {
     uint8_t * vertex_data = nullptr;
     D3D12_RANGE mem_range = {};
     mem_range.Begin = mem_range.End = 0; // We do not intend to read from this resource on the CPU.
-    vertex_buffer->Map(0, &mem_range, reinterpret_cast<void **>(&vertex_data));
+    render_ctx.vertex_buffer->Map(0, &mem_range, reinterpret_cast<void **>(&vertex_data));
     memcpy(vertex_data, vertices, vb_size);
-    vertex_buffer->Unmap(0, nullptr /*aka full-range*/);
+    render_ctx.vertex_buffer->Unmap(0, nullptr /*aka full-range*/);
 
     // Initialize the vertex buffer view (vbv)
-    D3D12_VERTEX_BUFFER_VIEW vbv = {};
-    vbv.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
-    vbv.SizeInBytes = (UINT)vb_size;
-    vbv.StrideInBytes = sizeof(Vertex);
+    render_ctx.vb_view.BufferLocation = render_ctx.vertex_buffer->GetGPUVirtualAddress();
+    render_ctx.vb_view.SizeInBytes = (UINT)vb_size;
+    render_ctx.vb_view.StrideInBytes = sizeof(Vertex);
 
     // Create fence
-    
     // create synchronization objects and wait until assets have been uploaded to the GPU.
+    CHECK_AND_FAIL(render_ctx.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&render_ctx.fence)));
 
-    ID3D12Fence * d3d_fence = nullptr;
-    res = d3d_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&d3d_fence));
-    CHECK_AND_FAIL(res);
-
-    UINT64 fence_value = 1;
+    render_ctx.fence_value = 1;
 
     // Create an event handle to use for frame synchronization.
-    HANDLE fence_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    if(nullptr == fence_event) {
+    render_ctx.fence_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if(nullptr == render_ctx.fence_event) {
         // map the error code to an HRESULT value.
         res = HRESULT_FROM_WIN32(GetLastError());
         CHECK_AND_FAIL(res);
     }
 
-    res = wait_for_previous_frame(&fence_value, &d3d_cmd_q, &d3d_fence, d3d_swapchain, fence_event, &frame_index);
-    CHECK_AND_FAIL(res);
+    CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
 
-    // main loop
+    // ========================================================================================================
+    // -- Main loop
     SDL_Event e = {};
     bool running = true;
     while(running) {
@@ -602,52 +594,44 @@ int main () {
         // -- nothing is updated
     
         // OnRender() aka rendering
-        res = render_something(
-            &d3d_cmd_allocator, d3d_pso, &direct_cmd_list, root_signature, render_targets,
-            frame_index, d3d_heap, rtv_descriptor_size, &vbv, d3d_cmd_q, swapchain
-        );
-        CHECK_AND_FAIL(res);
+        CHECK_AND_FAIL(render_triangle(&render_ctx));
 
-        res = wait_for_previous_frame(&fence_value, &d3d_cmd_q, &d3d_fence, d3d_swapchain, fence_event, &frame_index);
-        CHECK_AND_FAIL(res);
-
+        CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
     }
 
-
+    // ========================================================================================================
     // -- Cleanup
+    CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
 
-    res = wait_for_previous_frame(&fence_value, &d3d_cmd_q, &d3d_fence, d3d_swapchain, fence_event, &frame_index);
-    CHECK_AND_FAIL(res);
+    CloseHandle(render_ctx.fence_event);
 
-    CloseHandle(fence_event);
+    render_ctx.fence->Release();
 
-    d3d_fence->Release();
+    render_ctx.vertex_buffer->Release();
 
-    vertex_buffer->Release();
-
-    direct_cmd_list->Release();
-    d3d_pso->Release();
+    render_ctx.direct_cmd_list->Release();
+    render_ctx.pso->Release();
 
     pixel_shader->Release();
     vertex_shader->Release();
 
-    root_signature->Release();
+    render_ctx.root_signature->Release();
     if (signature_error_blob)
         signature_error_blob->Release();
     signature->Release();
 
-    d3d_cmd_allocator->Release();
+    render_ctx.cmd_allocator->Release();
 
-    for (unsigned i = 0; i < frame_count; ++i) {
-        render_targets[i]->Release();
+    for (unsigned i = 0; i < FRAME_COUNT; ++i) {
+        render_ctx.render_targets[i]->Release();
     }
 
-    d3d_heap->Release();
+    render_ctx.rtv_heap->Release();
 
-    d3d_swapchain->Release();
-    swapchain->Release();
-    d3d_cmd_q->Release();
-    d3d_device->Release();
+    render_ctx.swapchain3->Release();
+    render_ctx.swapchain->Release();
+    render_ctx.cmd_queue->Release();
+    render_ctx.device->Release();
     dxgi_factory->Release();
 
     debug_interface_dx->Release();
