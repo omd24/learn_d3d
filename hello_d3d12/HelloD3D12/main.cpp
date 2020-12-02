@@ -103,8 +103,150 @@ UINT compiler_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 UINT compiler_flags = 0;
 #endif
 
-int main () 
-{
+#define ARRAY_COUNT(arr)   sizeof(arr)/sizeof(arr[0])
+
+static HRESULT
+wait_for_previous_frame(
+    UINT64 * fence_value,
+    ID3D12CommandQueue ** d3d_cmd_q,
+    ID3D12Fence ** d3d_fence,
+    IDXGISwapChain3 * d3d_swapchain,
+    HANDLE fence_event,
+    UINT * frame_index
+) {
+    // NOTE(omid):  We wait for the command list to execute; we are reusing the same command 
+    //              list in our main loop but for now, we just want to wait for setup to 
+    //              complete before continuing.
+
+    // -- Caveat emptor:
+    // NOTE(omid):  WAITING FOR THE FRAME TO COMPLETE BEFORE CONTINUING IS NOT BEST PRACTICE.
+    //              This is code implemented as such for simplicity. The D3D12HelloFrameBuffering
+    //              sample illustrates how to use fences for efficient resource usage and to
+    //              maximize GPU utilization.
+
+    HRESULT ret = E_FAIL;
+
+    // -- 1. signal and increment the fence value:
+    UINT64 fence = *fence_value;
+    ret = (*d3d_cmd_q)->Signal(*d3d_fence, fence);
+    CHECK_AND_FAIL(ret);
+    ++(*fence_value);
+
+    // -- 2. wait until the previous frame is finished
+    if ((*d3d_fence)->GetCompletedValue() < fence) {
+        ret = (*d3d_fence)->SetEventOnCompletion(fence, fence_event);
+        CHECK_AND_FAIL(ret);
+        WaitForSingleObject(fence_event, INFINITE /*return only when the object is signaled*/);
+    }
+
+    // -- 3. update frame index
+    *frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
+
+    return ret;
+}
+static HRESULT
+render_something (
+    ID3D12CommandAllocator ** cmd_allocator,
+    ID3D12PipelineState * pso,
+    ID3D12GraphicsCommandList ** cmd_list,
+    ID3D12RootSignature * root_signature,
+    ID3D12Resource * render_targets [],
+    UINT frame_index,
+    ID3D12DescriptorHeap * descriptor_heap,
+    UINT rtv_descriptor_size,
+    D3D12_VERTEX_BUFFER_VIEW * vbv,
+    ID3D12CommandQueue * cmd_queue,
+    IDXGISwapChain * swapchain
+) {
+    
+    HRESULT ret = E_FAIL;
+
+    // Populate command list
+    
+    // -- reset cmd_allocator and cmd_list
+    CHECK_AND_FAIL((*cmd_allocator)->Reset());
+    ret = (*cmd_list)->Reset(*cmd_allocator, pso);
+    CHECK_AND_FAIL(ret);
+
+    // -- set root_signature, viewport and scissor
+    (*cmd_list)->SetGraphicsRootSignature(root_signature);
+    D3D12_VIEWPORT viewport = {};
+    viewport.TopLeftX = 0;
+    viewport.TopLeftY = 0;
+    viewport.Width = 1280;
+    viewport.Height = 720;
+    D3D12_RECT scissor_rect = {};
+    scissor_rect.left = 0;
+    scissor_rect.top = 0;
+    scissor_rect.right = 1280;
+    scissor_rect.bottom = 720;
+    (*cmd_list)->RSSetViewports(1, &viewport);
+    (*cmd_list)->RSSetScissorRects(1, &scissor_rect);
+
+    // -- indicate that the backbuffer will be used as the render target
+    D3D12_RESOURCE_BARRIER barrier1 = {};
+    barrier1.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier1.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier1.Transition.pResource = render_targets[frame_index];
+    barrier1.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier1.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier1.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    (*cmd_list)->ResourceBarrier(1, &barrier1);
+
+    
+    // -- get CPU descriptor handle that represents the start of the heap
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle = descriptor_heap->GetCPUDescriptorHandleForHeapStart();
+    // -- apply initial offset
+    cpu_descriptor_handle.ptr = SIZE_T(INT64(cpu_descriptor_handle.ptr) + INT64(frame_index) * INT64(rtv_descriptor_size));
+    (*cmd_list)->OMSetRenderTargets(1, &cpu_descriptor_handle, FALSE, nullptr);
+    
+    // -- using Chelper structs
+    //CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(descriptor_heap->GetCPUDescriptorHandleForHeapStart(), frame_index, rtv_descriptor_size);
+    //cmd_list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // -- record commands
+    
+    // 1 - set all the elements in a render target to one value.
+    float clear_colors [] = {0.0f, 0.2f, 0.4f, 1.0f};
+    (*cmd_list)->ClearRenderTargetView(cpu_descriptor_handle, clear_colors, 0, nullptr);
+
+    // 2 - set primitive type and data order that describes input data for the input assembler stage.
+    (*cmd_list)->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // 3 - set the CPU descriptor handle for the vertex buffers (one vb for now)
+    (*cmd_list)->IASetVertexBuffers(0 , 1, vbv);
+
+    // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
+    (*cmd_list)->DrawInstanced(
+        3,  /* number of vertices to draw.                                                          */
+        1,  /* number of instances to draw.                                                         */
+        0,  /* index of the first vertex                                                            */
+        0   /* a value added to each index before reading per-instance data from a vertex buffer    */
+    );
+
+    // -- indicate that the backbuffer will now be used to present
+    D3D12_RESOURCE_BARRIER barrier2 = {};
+    barrier2.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier2.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier2.Transition.pResource = render_targets[frame_index];
+    barrier2.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier2.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier2.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+
+    (*cmd_list)->ResourceBarrier(1 , &barrier2);
+
+    // -- finish populating command list
+    (*cmd_list)->Close();
+
+    ID3D12CommandList * cmd_lists [] = {*cmd_list};
+    cmd_queue->ExecuteCommandLists(1, cmd_lists);
+
+    swapchain->Present(1 /*sync interval*/, 0 /*present flag*/);
+
+    return ret;
+}
+int main () {
     // SDL_Init
     SDL_Init(SDL_INIT_VIDEO);
 
@@ -121,7 +263,7 @@ int main ()
     }
 #endif
     // Create a Window
-    SDL_Window * wnd = SDL_CreateWindow("LearningD3D12", 0, 0, 1280, 720, 0);
+    SDL_Window * wnd = SDL_CreateWindow("LearningD3D12", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if(nullptr == wnd) {
         ::abort();
     }
@@ -443,142 +585,41 @@ int main ()
         CHECK_AND_FAIL(res);
     }
 
-
-    // NOTE(omid):  We wait for the command list to execute; we are reusing the same command 
-    //              list in our main loop but for now, we just want to wait for setup to 
-    //              complete before continuing.
-
-    // -- Caveat emptor:
-    // NOTE(omid):  WAITING FOR THE FRAME TO COMPLETE BEFORE CONTINUING IS NOT BEST PRACTICE.
-    //              This is code implemented as such for simplicity. The D3D12HelloFrameBuffering
-    //              sample illustrates how to use fences for efficient resource usage and to
-    //              maximize GPU utilization.
-
-    // -- 1. signal and increment the fence value:
-    UINT64 fence = fence_value;
-    res = d3d_cmd_q->Signal(d3d_fence, fence);
+    res = wait_for_previous_frame(&fence_value, &d3d_cmd_q, &d3d_fence, d3d_swapchain, fence_event, &frame_index);
     CHECK_AND_FAIL(res);
-    ++fence_value;
 
-    // -- 2. wait until the previous frame is finished
-    if (d3d_fence->GetCompletedValue() < fence) {
-        res = d3d_fence->SetEventOnCompletion(fence, fence_event);
+    // main loop
+    SDL_Event e = {};
+    bool running = true;
+    while(running) {
+        while(SDL_PollEvent(&e) != 0) {
+            //User requests quit
+            if(e.type == SDL_QUIT) {
+                running = false;
+            }
+        }
+        // OnUpdate()
+        // -- nothing is updated
+    
+        // OnRender() aka rendering
+        res = render_something(
+            &d3d_cmd_allocator, d3d_pso, &direct_cmd_list, root_signature, render_targets,
+            frame_index, d3d_heap, rtv_descriptor_size, &vbv, d3d_cmd_q, swapchain
+        );
         CHECK_AND_FAIL(res);
-        WaitForSingleObject(fence_event, INFINITE /*return only when the object is signaled*/ );
+
+        res = wait_for_previous_frame(&fence_value, &d3d_cmd_q, &d3d_fence, d3d_swapchain, fence_event, &frame_index);
+        CHECK_AND_FAIL(res);
+
     }
-
-    // -- 3. update frame index
-    frame_index = d3d_swapchain->GetCurrentBackBufferIndex();
-
-
-    // OnUpdate()
-    // -- nothing is updated
-
-    // OnRender()
-
-    // Populate command list
-    
-    // -- reset cmd_allocator and cmd_list
-    CHECK_AND_FAIL(d3d_cmd_allocator->Reset());
-    res = direct_cmd_list->Reset(d3d_cmd_allocator, d3d_pso);
-    CHECK_AND_FAIL(res);
-
-    // -- set root_signature, viewport and scissor
-    direct_cmd_list->SetGraphicsRootSignature(root_signature);
-    D3D12_VIEWPORT viewport = {};
-    D3D12_RECT scissor_rect = {};
-    direct_cmd_list->RSSetViewports(1, &viewport);
-    direct_cmd_list->RSSetScissorRects(1, &scissor_rect);
-
-    // -- indicate that the backbuffer will be used as the render target
-    D3D12_RESOURCE_BARRIER barrier1 = {};
-    barrier1.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier1.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier1.Transition.pResource = render_targets[frame_index];
-    barrier1.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier1.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier1.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-
-    direct_cmd_list->ResourceBarrier(1, &barrier1);
-
-    
-    // -- get CPU descriptor handle that represents the start of the heap
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle = d3d_heap->GetCPUDescriptorHandleForHeapStart();
-    // -- apply initial offset
-    cpu_descriptor_handle.ptr = SIZE_T(INT64(cpu_descriptor_handle.ptr) + INT64(frame_index) * INT64(rtv_descriptor_size));
-    direct_cmd_list->OMSetRenderTargets(1, &cpu_descriptor_handle, FALSE, nullptr);
-    
-    // -- using Chelper structs
-    //CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(d3d_heap->GetCPUDescriptorHandleForHeapStart(), frame_index, rtv_descriptor_size);
-    //direct_cmd_list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-    // -- record commands
-    
-    // 1 - set all the elements in a render target to one value.
-    float clear_colors [] = {0.0f, 0.2f, 0.4f, 1.0f};
-    direct_cmd_list->ClearRenderTargetView(cpu_descriptor_handle, clear_colors, 0, nullptr);
-
-    // 2 - set primitive type and data order that describes input data for the input assembler stage.
-    direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    // 3 - set the CPU descriptor handle for the vertex buffers (one vb for now)
-    direct_cmd_list->IASetVertexBuffers(0 , 1, &vbv);
-
-    // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
-    direct_cmd_list->DrawInstanced(
-        3,  /* number of vertices to draw.                                                          */
-        1,  /* number of instances to draw.                                                         */
-        0,  /* index of the first vertex                                                            */
-        0   /* a value added to each index before reading per-instance data from a vertex buffer    */
-    );
-
-    // -- indicate that the backbuffer will now be used to present
-    D3D12_RESOURCE_BARRIER barrier2 = {};
-    barrier2.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier2.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier2.Transition.pResource = render_targets[frame_index];
-    barrier2.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier2.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier2.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-
-    direct_cmd_list->ResourceBarrier(1 , &barrier2);
-
-    // -- finish populating command list
-    direct_cmd_list->Close();
-
-
-    // OnRender
-    // NOTE(omid):  Rendering involves
-    //              populating the command list, 
-    //              then the command list can be executed and 
-    //              then next buffer in the swap chain is presented (present the frame),
-
-
-
-    // OnDestroy
-    //              wait for the gpu to finish (to be done with all resources)
-    //              close handle (fence_event)
-
-
-    // Loop 
-    /*
-    * 
-        // Wait for fences
-        CHECK(YRB::WaitForFences(&fences_framedone[frame_index], 1));
-
-        - SwapChain -> Give me the next image to render to.
-
-        - Render to Image
-
-        - Present SwapChain Image
-    */
-
-
-    // Other stuff -> Shaders, DescriptorManagement (DescriptorHeap, RootSignature), PSO, Sync Objects, Buffers, Textures, ...
-
 
 
     // -- Cleanup
+
+    res = wait_for_previous_frame(&fence_value, &d3d_cmd_q, &d3d_fence, d3d_swapchain, fence_event, &frame_index);
+    CHECK_AND_FAIL(res);
+
+    CloseHandle(fence_event);
 
     d3d_fence->Release();
 
