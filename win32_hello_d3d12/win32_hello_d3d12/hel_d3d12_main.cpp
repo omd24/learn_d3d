@@ -9,7 +9,8 @@
 // -- uncomment below to use CHelper structs
 //#include "d3dx12.h"
 
-#pragma comment (lib, "dxguid")
+// -- alternative way of linking (instead of vs proj settings)
+//      #pragma comment (lib, "dxguid")
 
 #include <stdio.h>
 
@@ -44,7 +45,7 @@ UINT compiler_flags = 0;
 bool global_running;
 
 #define ARRAY_COUNT(arr)            sizeof(arr)/sizeof(arr[0])
-#define ASSERT_EXP(exp) if(!(exp))  {*(int *)0 = 0;}
+#define SIMPLE_ASSERT(exp) if(!(exp))  {*(int *)0 = 0;}
 
 #define FRAME_COUNT 2               // Use double-buffering
 struct D3DRenderContext {
@@ -258,7 +259,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     wc.hInstance     = hInstance;
     wc.lpszClassName = "d3d12_win32";
 
-    ASSERT_EXP(RegisterClassA(&wc));
+    SIMPLE_ASSERT(RegisterClassA(&wc));
 
     HWND hwnd = CreateWindowExA(
         0,                                      // Optional window styles.
@@ -268,7 +269,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, // Size and position settings
         0 /* Parent window */,  0 /* Menu */, hInstance /* Instance handle */, 0 /* Additional application data */
     );
-    ASSERT_EXP(hwnd);
+    SIMPLE_ASSERT(hwnd);
 #pragma endregion Windows_Setup
 
     // ========================================================================================================

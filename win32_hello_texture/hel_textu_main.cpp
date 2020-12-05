@@ -1,84 +1,21 @@
-#include <stdio.h>
-
-// DirectX 12 specific headers.
+#include <windows.h>
 #include <d3d12.h>
 
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
-#include <DirectXMath.h>
+#include <directxmath.h>
+#include <dxgidebug.h>
 
 // -- uncomment below to use CHelper structs
 //#include "d3dx12.h"
+
+#include <stdio.h>
 
 #if !defined(NDEBUG) && !defined(_DEBUG)
 #error "Define at least one."
 #elif defined(NDEBUG) && defined(_DEBUG)
 #error "Define at most one."
 #endif
-
-#if defined(_WIN64)
-#if defined(_DEBUG)
-#pragma comment (lib, "lib/64/SDL2-staticd")
-#else
-#pragma comment (lib, "lib/64/SDL2-static")
-#endif
-#else
-#if defined(_DEBUG)
-#pragma comment (lib, "lib/32/SDL2-staticd")
-#else
-#pragma comment (lib, "lib/32/SDL2-static")
-#endif
-#endif
-
-#pragma comment (lib, "Imm32")
-#pragma comment (lib, "Setupapi")
-#pragma comment (lib, "Version")
-#pragma comment (lib, "Winmm")
-
-#pragma comment (lib, "d3d12")
-#pragma comment (lib, "dxgi")
-#pragma comment (lib, "dxguid")
-#pragma comment (lib, "uuid")
-#pragma comment (lib, "gdi32")
-
-#define _CRT_SECURE_NO_WARNINGS 1
-
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
-#include <dxgidebug.h>
-//#include <directxmath.h>
-
-#define SDL_MAIN_HANDLED
-#include "SDL2/SDL.h"
-#include "SDL2/SDL_syswm.h"
-
-#include <cstdio>
-#include <algorithm>
-
-//// Windows Runtime Library. Needed for Microsoft::WRL::ComPtr<> template class.
-//#include <wrl.h>
-//using namespace Microsoft::WRL;
-
-/*
-d3d12.lib
-dxgi.lib
-dxguid.lib
-uuid.lib
-kernel32.lib
-user32.lib
-gdi32.lib
-winspool.lib
-comdlg32.lib
-advapi32.lib
-shell32.lib
-ole32.lib
-oleaut32.lib
-odbc32.lib
-odbccp32.lib
-runtimeobject.lib
-*/
 
 #define SUCCEEDED(hr)   (((HRESULT)(hr)) >= 0)
 //#define SUCCEEDED_OPERATION(hr)   (((HRESULT)(hr)) == S_OK)
@@ -89,7 +26,6 @@ runtimeobject.lib
         ::printf("[ERROR] " #hr "() failed at line %d. \n", __LINE__);   \
         ::abort();                                  \
     }                                               \
-    /**/
 
 #if defined(_DEBUG)
 #define ENABLE_DEBUG_LAYER 1
@@ -103,7 +39,10 @@ UINT compiler_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 UINT compiler_flags = 0;
 #endif
 
-#define ARRAY_COUNT(arr)   sizeof(arr)/sizeof(arr[0])
+bool global_running;
+
+#define ARRAY_COUNT(arr)            sizeof(arr)/sizeof(arr[0])
+#define SIMPLE_ASSERT(exp) if(!(exp))  {*(int *)0 = 0;}
 
 #define FRAME_COUNT 2               // Use double-buffering
 struct D3DRenderContext {
@@ -285,24 +224,68 @@ create_triangle_vertices (float aspect_ratio, Vertex out_vertices []) {
     out_vertices[2] = v_blue;
 }
 
-int
-main () {
-    // Enable Debug Layer
-    UINT dxgiFactoryFlags = 0;
-#if ENABLE_DEBUG_LAYER > 0
-    ID3D12Debug * debug_interface_dx = nullptr;
-    //ID3D12Debug1 * debug_controller = nullptr;
-    if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface_dx)))) {
-        debug_interface_dx->EnableDebugLayer();
-        //debug_interface_dx->QueryInterface(IID_PPV_ARGS(&debug_controller));
-        //debug_controller->SetEnableGPUBasedValidation(true); // -- not needed for now
-        dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+
+static LRESULT CALLBACK
+main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    LRESULT ret = {};
+    switch (uMsg) {
+        /* WM_PAIN is not handled for now ... 
+        case WM_PAINT: {
+            
+        } break;
+        */
+        case WM_CLOSE: {
+            global_running = false;
+            DestroyWindow(hwnd);
+            ret = 0;
+        } break;
+        default: {
+            ret = DefWindowProcA(hwnd, uMsg, wParam, lParam);
+        } break;
     }
-#endif
+    return ret;
+}
+
+INT WINAPI
+WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
+    // ========================================================================================================
+#pragma region Windows_Setup
+    WNDCLASSA wc = {};
+    wc.style = CS_HREDRAW|CS_VREDRAW|CS_OWNDC;
+    wc.lpfnWndProc   = main_win_cb;
+    wc.hInstance     = hInstance;
+    wc.lpszClassName = "d3d12_win32";
+
+    SIMPLE_ASSERT(RegisterClassA(&wc));
+
+    HWND hwnd = CreateWindowExA(
+        0,                                      // Optional window styles.
+        wc.lpszClassName,                       // Window class
+        "Hello texture app",        // Window text
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,       // Window style
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, // Size and position settings
+        0 /* Parent window */,  0 /* Menu */, hInstance /* Instance handle */, 0 /* Additional application data */
+    );
+    SIMPLE_ASSERT(hwnd);
+#pragma endregion Windows_Setup
 
     // ========================================================================================================
-    // -- Initialization
+#pragma region Enable_Debug_Layer
+    UINT dxgiFactoryFlags = 0;
+    #if ENABLE_DEBUG_LAYER > 0
+        ID3D12Debug * debug_interface_dx = nullptr;
+        //ID3D12Debug1 * debug_controller = nullptr;
+        if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface_dx)))) {
+            debug_interface_dx->EnableDebugLayer();
+            //debug_interface_dx->QueryInterface(IID_PPV_ARGS(&debug_controller));
+            //debug_controller->SetEnableGPUBasedValidation(true); // -- not needed for now
+            dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+        }
+    #endif
+#pragma endregion Enable_Debug_Layer
 
+    // ========================================================================================================
+#pragma region Initialization
     D3DRenderContext render_ctx = {.width = 1280, .height = 720};
     render_ctx.aspect_ratio = (float)render_ctx.width / (float)render_ctx.height;
     render_ctx.viewport.TopLeftX = 0;
@@ -313,14 +296,6 @@ main () {
     render_ctx.scissor_rect.top = 0;
     render_ctx.scissor_rect.right = render_ctx.width;
     render_ctx.scissor_rect.bottom = render_ctx.height;
-
-
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_Window * wnd = SDL_CreateWindow("LearningD3D12", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, render_ctx.width, render_ctx.height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
-    if(nullptr == wnd) {
-        ::abort();
-    }
-
     // Query Adapter (PhysicalDevice)
     IDXGIFactory * dxgi_factory = nullptr;
     CHECK_AND_FAIL(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgi_factory)));
@@ -364,10 +339,6 @@ main () {
     DXGI_SAMPLE_DESC sampler_desc = {};
     sampler_desc.Count = 1;
     sampler_desc.Quality = 0;
-
-    SDL_SysWMinfo wnd_info = {};
-    SDL_GetWindowWMInfo(wnd, &wnd_info);
-    HWND hwnd = wnd_info.info.win.window;
 
     // Create Swapchain
     DXGI_SWAP_CHAIN_DESC swapchain_desc = {};
@@ -449,6 +420,8 @@ main () {
             ps_err->Release();
         }
     }
+    SIMPLE_ASSERT(vertex_shader);
+    SIMPLE_ASSERT(pixel_shader);
 
     // Create vertex-input-layout Elements
     D3D12_INPUT_ELEMENT_DESC input_desc [2];
@@ -578,29 +551,29 @@ main () {
     }
 
     CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
+#pragma endregion Initialization
 
     // ========================================================================================================
-    // -- Main loop
-    SDL_Event e = {};
-    bool running = true;
-    while(running) {
-        while(SDL_PollEvent(&e) != 0) {
-            //User requests quit
-            if(e.type == SDL_QUIT) {
-                running = false;
-            }
+#pragma region Main_Loop
+    global_running = true;
+    while(global_running) {
+        MSG msg = {};
+        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
         }
         // OnUpdate()
         // -- nothing is updated
-    
+
         // OnRender() aka rendering
         CHECK_AND_FAIL(render_triangle(&render_ctx));
 
         CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
     }
+#pragma endregion Main_Loop
 
     // ========================================================================================================
-    // -- Cleanup
+#pragma region Cleanup_And_Debug
     CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
 
     CloseHandle(render_ctx.fence_event);
@@ -666,9 +639,8 @@ main () {
         dxgi_debugger->Release();
         FreeLibrary(dxgidebug_dll);
     }
+#pragma endregion Cleanup_And_Debug
 
-    SDL_DestroyWindow(wnd);
-    SDL_Quit();
-    
     return 0;
 }
+
