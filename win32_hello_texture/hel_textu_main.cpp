@@ -30,12 +30,6 @@
 #define ENABLE_DEBUG_LAYER 0
 #endif
 
-#if defined(_DEBUG)
-UINT compiler_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-UINT compiler_flags = 0;
-#endif
-
 bool global_running;
 
 #define ARRAY_COUNT(arr)            sizeof(arr)/sizeof(arr[0])
@@ -76,9 +70,13 @@ struct D3DRenderContext {
     UINT64                          fence_value;
 
 };
-struct Vertex {
+struct ColorVertex {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT4 color;
+};
+struct TextuVertex {
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT2 uv;
 };
 static HRESULT
 wait_for_previous_frame (D3DRenderContext * render_ctx) {
@@ -180,40 +178,32 @@ render_triangle (D3DRenderContext * render_ctx) {
     return ret;
 }
 static void
-create_triangle_vertices (float aspect_ratio, Vertex out_vertices []) {
-    Vertex v_red = {};
-    v_red.position.x = 0.0f;
-    v_red.position.y = 0.25f * aspect_ratio;
-    v_red.position.z = 0.0f;
-    v_red.color.x = 1.0f;
-    v_red.color.y = 0.0f;
-    v_red.color.z = 0.0f;
-    v_red.color.w = 1.0f;
+create_triangle_vertices (float aspect_ratio, TextuVertex out_vertices []) {
+    TextuVertex vtx1 = {};
+    vtx1.position.x = 0.0f;
+    vtx1.position.y = 0.25f * aspect_ratio;
+    vtx1.position.z = 0.0f;
+    vtx1.uv.x       = 0.5f;
+    vtx1.uv.y       = 0.0f;
 
-    Vertex v_green = {};
-    v_green.position.x = 0.25f;
-    v_green.position.y = -0.25f * aspect_ratio;
-    v_green.position.z = 0.0f;
-    v_green.color.x = 0.0f;
-    v_green.color.y = 1.0f;
-    v_green.color.z = 0.0f;
-    v_green.color.w = 1.0f;
+    TextuVertex vtx2 = {};
+    vtx2.position.x = 0.25f;
+    vtx2.position.y = -0.25f * aspect_ratio;
+    vtx2.position.z = 0.0f;
+    vtx2.uv.x       = 1.0f;
+    vtx2.uv.y       = 1.0f;
 
-    Vertex v_blue = {};
-    v_blue.position.x = -0.25f;
-    v_blue.position.y = -0.25f * aspect_ratio;
-    v_blue.position.z = 0.0f;
-    v_blue.color.x = 0.0f;
-    v_blue.color.y = 0.0f;
-    v_blue.color.z = 1.0f;
-    v_blue.color.w = 1.0f;
+    TextuVertex vtx3 = {};
+    vtx3.position.x = -0.25f;
+    vtx3.position.y = -0.25f * aspect_ratio;
+    vtx3.position.z = 0.0f;
+    vtx3.uv.x       = 0.0f;
+    vtx3.uv.y       = 1.0f;
 
-    out_vertices[0] = v_red;
-    out_vertices[1] = v_green;
-    out_vertices[2] = v_blue;
+    out_vertices[0] = vtx1;
+    out_vertices[1] = vtx2;
+    out_vertices[2] = vtx3;
 }
-
-
 static LRESULT CALLBACK
 main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     LRESULT ret = {};
@@ -234,7 +224,6 @@ main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     }
     return ret;
 }
-
 INT WINAPI
 WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     // ========================================================================================================
@@ -443,12 +432,19 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 #pragma endregion Root Signature
 
     // Load and compile shaders
-    wchar_t const * shaders_path = L"./shaders/basic.hlsl";
+    
+#if defined(_DEBUG)
+    UINT compiler_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+    UINT compiler_flags = 0;
+#endif
+
+    wchar_t const * shaders_path = L"./shaders/texture_shader.hlsl";
     ID3DBlob * vertex_shader = nullptr;
     ID3DBlob * vs_err = nullptr;
     ID3DBlob * pixel_shader = nullptr;
     ID3DBlob * ps_err = nullptr;
-    res = D3DCompileFromFile(shaders_path, nullptr, nullptr, "VSMain", "vs_5_0", compiler_flags, 0, &vertex_shader, &vs_err);
+    res = D3DCompileFromFile(shaders_path, nullptr, nullptr, "VertexShader_Main", "vs_5_0", compiler_flags, 0, &vertex_shader, &vs_err);
     if (FAILED(res)) {
         if (vs_err) {
             OutputDebugStringA((char *)vs_err->GetBufferPointer());
@@ -457,7 +453,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
             ::printf("could not load/compile shader\n");
         }
     }
-    res = D3DCompileFromFile(shaders_path, nullptr, nullptr, "PSMain", "ps_5_0", compiler_flags, 0, &pixel_shader, &ps_err);
+    res = D3DCompileFromFile(shaders_path, nullptr, nullptr, "PixelShader_Main", "ps_5_0", compiler_flags, 0, &pixel_shader, &ps_err);
     if (FAILED(res)) {
         if (ps_err) {
             OutputDebugStringA((char *)ps_err->GetBufferPointer());
@@ -475,33 +471,37 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     input_desc[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
     
     input_desc[1] = {};
-    input_desc[1].SemanticName = "COLOR";
-    input_desc[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    input_desc[1].AlignedByteOffset = 12; //?
+    input_desc[1].SemanticName = "TEXCOORD";
+    input_desc[1].Format = DXGI_FORMAT_R32G32_FLOAT;
+    input_desc[1].AlignedByteOffset = 12; // bc of the position?
     input_desc[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 
     // Create pipeline state object
 
-    D3D12_BLEND_DESC blend_desc = {};
-    blend_desc.AlphaToCoverageEnable                    = FALSE;
-    blend_desc.IndependentBlendEnable                   = FALSE;
-    blend_desc.RenderTarget[0].BlendEnable              = FALSE;
-    blend_desc.RenderTarget[0].LogicOpEnable            = FALSE;
-    blend_desc.RenderTarget[0].SrcBlend                 = D3D12_BLEND_ONE;
-    blend_desc.RenderTarget[0].DestBlend                = D3D12_BLEND_ZERO;
-    blend_desc.RenderTarget[0].BlendOp                  = D3D12_BLEND_OP_ADD;
-    blend_desc.RenderTarget[0].SrcBlendAlpha            = D3D12_BLEND_ONE;
-    blend_desc.RenderTarget[0].DestBlendAlpha           = D3D12_BLEND_ZERO;
-    blend_desc.RenderTarget[0].BlendOpAlpha             = D3D12_BLEND_OP_ADD;
-    blend_desc.RenderTarget[0].LogicOp                  = D3D12_LOGIC_OP_NOOP;
-    blend_desc.RenderTarget[0].RenderTargetWriteMask    = D3D12_COLOR_WRITE_ENABLE_ALL;
+    D3D12_BLEND_DESC def_blend_desc = {};
+    def_blend_desc.AlphaToCoverageEnable                    = FALSE;
+    def_blend_desc.IndependentBlendEnable                   = FALSE;
+    def_blend_desc.RenderTarget[0].BlendEnable              = FALSE;
+    def_blend_desc.RenderTarget[0].LogicOpEnable            = FALSE;
+    def_blend_desc.RenderTarget[0].SrcBlend                 = D3D12_BLEND_ONE;
+    def_blend_desc.RenderTarget[0].DestBlend                = D3D12_BLEND_ZERO;
+    def_blend_desc.RenderTarget[0].BlendOp                  = D3D12_BLEND_OP_ADD;
+    def_blend_desc.RenderTarget[0].SrcBlendAlpha            = D3D12_BLEND_ONE;
+    def_blend_desc.RenderTarget[0].DestBlendAlpha           = D3D12_BLEND_ZERO;
+    def_blend_desc.RenderTarget[0].BlendOpAlpha             = D3D12_BLEND_OP_ADD;
+    def_blend_desc.RenderTarget[0].LogicOp                  = D3D12_LOGIC_OP_NOOP;
+    def_blend_desc.RenderTarget[0].RenderTargetWriteMask    = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-    D3D12_RASTERIZER_DESC rasterizer_desc = {};
-    rasterizer_desc.FillMode = D3D12_FILL_MODE_SOLID;
-    rasterizer_desc.CullMode = D3D12_CULL_MODE_BACK;
-    rasterizer_desc.FrontCounterClockwise = false;
-    rasterizer_desc.DepthClipEnable = TRUE;
-    rasterizer_desc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    D3D12_RASTERIZER_DESC def_rasterizer_desc = {};
+    def_rasterizer_desc.FillMode = D3D12_FILL_MODE_SOLID;
+    def_rasterizer_desc.CullMode = D3D12_CULL_MODE_BACK;
+    def_rasterizer_desc.FrontCounterClockwise = false;
+    def_rasterizer_desc.DepthBias = 0;
+    def_rasterizer_desc.DepthBiasClamp = 0.0f;
+    def_rasterizer_desc.SlopeScaledDepthBias = 0.0f;
+    def_rasterizer_desc.DepthClipEnable = TRUE;
+    def_rasterizer_desc.ForcedSampleCount = 0;
+    def_rasterizer_desc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
     pso_desc.pRootSignature = render_ctx.root_signature;
@@ -509,13 +509,13 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     pso_desc.VS.BytecodeLength = vertex_shader->GetBufferSize();
     pso_desc.PS.pShaderBytecode = pixel_shader->GetBufferPointer();
     pso_desc.PS.BytecodeLength = pixel_shader->GetBufferSize();
-    pso_desc.BlendState = blend_desc;
+    pso_desc.BlendState = def_blend_desc;
     pso_desc.SampleMask = UINT_MAX;
-    pso_desc.RasterizerState = rasterizer_desc;
+    pso_desc.RasterizerState = def_rasterizer_desc;
     pso_desc.DepthStencilState.StencilEnable = FALSE;
     pso_desc.DepthStencilState.DepthEnable = FALSE;
     pso_desc.InputLayout.pInputElementDescs = input_desc;
-    pso_desc.InputLayout.NumElements = _countof(input_desc);
+    pso_desc.InputLayout.NumElements = ARRAY_COUNT(input_desc);
     pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE::D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso_desc.NumRenderTargets = 1;
     pso_desc.RTVFormats[0] = DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -529,13 +529,14 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     res = render_ctx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_ctx.cmd_allocator, render_ctx.pso, IID_PPV_ARGS(&render_ctx.direct_cmd_list));
     CHECK_AND_FAIL(res);
 
+    /*
     // -- close command list for now (nothing to record yet)
     CHECK_AND_FAIL(render_ctx.direct_cmd_list->Close());
+    */
 
     // Create vertex buffer (VB)
-
     // vertex data
-    Vertex vertices [3] = {};
+    TextuVertex vertices [3] = {};
     create_triangle_vertices(render_ctx.aspect_ratio, vertices);
     size_t vb_size = sizeof(vertices);
 
@@ -546,13 +547,16 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     D3D12_RESOURCE_DESC rsc_desc = {};
     rsc_desc.Dimension = D3D12_RESOURCE_DIMENSION::D3D12_RESOURCE_DIMENSION_BUFFER;
+    rsc_desc.Alignment = 0;
     rsc_desc.Width = vb_size;
     rsc_desc.Height = 1;
     rsc_desc.DepthOrArraySize = 1;
     rsc_desc.MipLevels = 1;
+    rsc_desc.Format = DXGI_FORMAT_UNKNOWN;
     rsc_desc.SampleDesc.Count = 1;
     rsc_desc.SampleDesc.Quality = 0;
     rsc_desc.Layout = D3D12_TEXTURE_LAYOUT::D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    rsc_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     res = render_ctx.device->CreateCommittedResource(
         &heap_props, D3D12_HEAP_FLAG_NONE, &rsc_desc,
@@ -571,8 +575,40 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     // Initialize the vertex buffer view (vbv)
     render_ctx.vb_view.BufferLocation = render_ctx.vertex_buffer->GetGPUVirtualAddress();
+    render_ctx.vb_view.StrideInBytes = sizeof(*vertices);
     render_ctx.vb_view.SizeInBytes = (UINT)vb_size;
-    render_ctx.vb_view.StrideInBytes = sizeof(Vertex);
+
+    // Note: This pointer is a CPU object but this resource needs to stay in scope until
+    // the command list that references it has finished executing on the GPU.
+    // We will flush the GPU at the end of this method to ensure the resource is not
+    // prematurely destroyed.
+    ID3D12Resource * textureUploadHeap = nullptr;
+    
+    // Create the texture
+
+    // -- describe and create a 2D texture
+
+
+
+    // -- create the gpu upload buffer
+
+
+
+    // -- generate texture data
+
+
+
+    // Copy texture data to the intermediate upload heap and
+    // then schedule a copy from the upload heap to the 2D texture
+
+
+    // -- describe and create a SRV for the texture
+
+
+
+    // -- close the command list and execute it to begin inital gpu setup
+
+
 
     // Create fence
     // create synchronization objects and wait until assets have been uploaded to the GPU.
