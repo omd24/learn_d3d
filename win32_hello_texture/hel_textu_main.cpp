@@ -6,9 +6,6 @@
 #include <directxmath.h>
 #include <dxgidebug.h>
 
-// -- uncomment below to use CHelper structs
-//#include "d3dx12.h"
-
 #include <stdio.h>
 
 #if !defined(NDEBUG) && !defined(_DEBUG)
@@ -63,6 +60,7 @@ struct D3DRenderContext {
     ID3D12CommandQueue *            cmd_queue;
     ID3D12RootSignature *           root_signature;
     ID3D12DescriptorHeap *          rtv_heap;
+    ID3D12DescriptorHeap *          srv_heap;
     ID3D12PipelineState *           pso;
     ID3D12GraphicsCommandList *     direct_cmd_list;
     UINT                            rtv_descriptor_size;
@@ -84,15 +82,6 @@ struct Vertex {
 };
 static HRESULT
 wait_for_previous_frame (D3DRenderContext * render_ctx) {
-    // NOTE(omid):  We wait for the command list to execute; we are reusing the same command 
-    //              list in our main loop but for now, we just want to wait for setup to 
-    //              complete before continuing.
-
-    // -- Caveat emptor:
-    // NOTE(omid):  WAITING FOR THE FRAME TO COMPLETE BEFORE CONTINUING IS NOT BEST PRACTICE.
-    //              This is code implemented as such for simplicity. The D3D12HelloFrameBuffering
-    //              sample illustrates how to use fences for efficient resource usage and to
-    //              maximize GPU utilization.
 
     HRESULT ret = E_FAIL;
 
@@ -274,11 +263,8 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     UINT dxgiFactoryFlags = 0;
     #if ENABLE_DEBUG_LAYER > 0
         ID3D12Debug * debug_interface_dx = nullptr;
-        //ID3D12Debug1 * debug_controller = nullptr;
         if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface_dx)))) {
             debug_interface_dx->EnableDebugLayer();
-            //debug_interface_dx->QueryInterface(IID_PPV_ARGS(&debug_controller));
-            //debug_controller->SetEnableGPUBasedValidation(true); // -- not needed for now
             dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
         }
     #endif
@@ -345,7 +331,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     swapchain_desc.BufferDesc = backbuffer_desc;
     swapchain_desc.SampleDesc = sampler_desc;
     swapchain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swapchain_desc.BufferCount = 2; // Use double-buffering;
+    swapchain_desc.BufferCount = FRAME_COUNT;
     swapchain_desc.OutputWindow = hwnd;
     swapchain_desc.Windowed = TRUE;
     swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -361,16 +347,24 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     ::printf("The current frame index is %d\n", render_ctx.frame_index);
 
     // Create Render Target View Descriptor Heap
-    D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc = {};
-    descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    descriptor_heap_desc.NumDescriptors = FRAME_COUNT;
-    descriptor_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {};
+    rtv_heap_desc.NumDescriptors = FRAME_COUNT;
+    rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    res = render_ctx.device->CreateDescriptorHeap(&descriptor_heap_desc, IID_PPV_ARGS(&render_ctx.rtv_heap));
+    res = render_ctx.device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&render_ctx.rtv_heap));
     CHECK_AND_FAIL(res);
+
+    // Create a Shader Resource View (SRV) heap for the texture
+    D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
+    srv_heap_desc.NumDescriptors = 1;
+    srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    res = render_ctx.device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&render_ctx.srv_heap));
 
     render_ctx.rtv_descriptor_size = render_ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     ::printf("size of rtv descriptor heap (to increment handle): %d\n", render_ctx.rtv_descriptor_size);
+    // -- create frame resource
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle_start = render_ctx.rtv_heap->GetCPUDescriptorHandleForHeapStart();
     for (UINT i = 0; i < FRAME_COUNT; ++i) {
         res = render_ctx.swapchain3->GetBuffer(i, IID_PPV_ARGS(&render_ctx.render_targets[i]));
@@ -379,6 +373,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
         //cpu_handle.ptr = SIZE_T(INT64(rtv_handle_start) + INT64(1) * INT64(rtv_descriptor_size));
         cpu_handle.ptr = rtv_handle_start.ptr + ((UINT64)i * render_ctx.rtv_descriptor_size);
+        // -- create a rtv for each frame
         render_ctx.device->CreateRenderTargetView(render_ctx.render_targets[i], nullptr, cpu_handle);
     }
 
@@ -386,17 +381,66 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     res = render_ctx.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_ctx.cmd_allocator));
     CHECK_AND_FAIL(res);
 
-    // Create empty root signature
-    D3D12_ROOT_SIGNATURE_DESC root_desc = {};
-    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    // ========================================================================================================
+#pragma region Root Signature
+    // Create root signature
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
+    feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(render_ctx.device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &feature_data, 1))) {
+        feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_DESCRIPTOR_RANGE1 ranges [1] = {};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].BaseShaderRegister = 0;
+    ranges[0].RegisterSpace = 0;
+    ranges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_DESCRIPTOR_TABLE1 descriptor_table = {};
+    descriptor_table.NumDescriptorRanges = 1;
+    descriptor_table.pDescriptorRanges = &ranges[0];
+
+    D3D12_ROOT_PARAMETER1 root_paramters [1] = {};
+    root_paramters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_paramters[0].DescriptorTable = descriptor_table;
+    root_paramters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.MipLODBias = 0;
+    sampler.MaxAnisotropy = 0;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC1 root_desc1 = {};
+    root_desc1.NumParameters = ARRAY_COUNT(root_paramters);
+    root_desc1.pParameters = &root_paramters[0];
+    root_desc1.NumStaticSamplers = 1;
+    root_desc1.pStaticSamplers = &sampler;
+    root_desc1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {};
+    root_signature_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    root_signature_desc.Desc_1_1 = root_desc1;
 
     ID3DBlob * signature = nullptr;
     ID3DBlob * signature_error_blob = nullptr;
-    res = D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION::D3D_ROOT_SIGNATURE_VERSION_1, &signature, &signature_error_blob);
-    CHECK_AND_FAIL(res);
+
+    CHECK_AND_FAIL(D3D12SerializeVersionedRootSignature(&root_signature_desc, &signature, &signature_error_blob));
 
     res = render_ctx.device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&render_ctx.root_signature));
     CHECK_AND_FAIL(res);
+#pragma endregion Root Signature
 
     // Load and compile shaders
     wchar_t const * shaders_path = L"./shaders/basic.hlsl";
@@ -494,12 +538,6 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     Vertex vertices [3] = {};
     create_triangle_vertices(render_ctx.aspect_ratio, vertices);
     size_t vb_size = sizeof(vertices);
-
-    // NOTE(omid): An upload heap is used here for code simplicity 
-    //      and because there are very few verts to actually transfer.
-    // NOTE(omid): using upload heaps to transfer static data such as vb(s) is not recommended.
-    //      Every time the GPU needs it, the upload heap will be marshalled over. 
-    //      Read up on Default Heap usage.
 
     D3D12_HEAP_PROPERTIES heap_props = {};
     heap_props.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -599,6 +637,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         render_ctx.render_targets[i]->Release();
     }
 
+    render_ctx.srv_heap->Release();
     render_ctx.rtv_heap->Release();
 
     render_ctx.swapchain3->Release();
@@ -618,16 +657,6 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     if (dxgidebug_dll) {
         auto dxgiGetDebugInterface = reinterpret_cast<LPDXGIGETDEBUGINTERFACE>(
             reinterpret_cast<void*>(GetProcAddress(dxgidebug_dll, "DXGIGetDebugInterface")));
-
-        // -- working with dxgi_info_queue
-        /*
-        IDXGIInfoQueue * dxgiInfoQueue = nullptr;
-        DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgiInfoQueue)); 
-        if (dxgiInfoQueue) {
-            dxgiInfoQueue->SetBreakOnSeverity( DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, true );
-            dxgiInfoQueue->SetBreakOnSeverity( DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION, true );
-        }
-        */
 
         IDXGIDebug1 * dxgi_debugger = nullptr;
         DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgi_debugger));
