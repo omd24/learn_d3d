@@ -61,6 +61,7 @@ struct D3DRenderContext {
 
     // App resources
     ID3D12Resource *                vertex_buffer;
+    ID3D12Resource *                texture;
     D3D12_VERTEX_BUFFER_VIEW        vb_view;
 
     // Synchronization stuff
@@ -115,9 +116,13 @@ render_triangle (D3DRenderContext * render_ctx) {
 
     // -- set root_signature, viewport and scissor
     render_ctx->direct_cmd_list->SetGraphicsRootSignature(render_ctx->root_signature);
-
     render_ctx->direct_cmd_list->RSSetViewports(1, &render_ctx->viewport);
     render_ctx->direct_cmd_list->RSSetScissorRects(1, &render_ctx->scissor_rect);
+
+    // -- set descriptor heaps and root descriptro table
+    ID3D12DescriptorHeap * heaps [] = {render_ctx->srv_heap};
+    render_ctx->direct_cmd_list->SetDescriptorHeaps(ARRAY_COUNT(heaps), heaps);
+    render_ctx->direct_cmd_list->SetGraphicsRootDescriptorTable(0, render_ctx->srv_heap->GetGPUDescriptorHandleForHeapStart());
 
     // -- indicate that the backbuffer will be used as the render target
     D3D12_RESOURCE_BARRIER barrier1 = {};
@@ -131,16 +136,16 @@ render_triangle (D3DRenderContext * render_ctx) {
     render_ctx->direct_cmd_list->ResourceBarrier(1, &barrier1);
     
     // -- get CPU descriptor handle that represents the start of the heap
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu_descriptor_handle = render_ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = render_ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart();
     // -- apply initial offset
-    cpu_descriptor_handle.ptr = SIZE_T(INT64(cpu_descriptor_handle.ptr) + INT64(render_ctx->frame_index) * INT64(render_ctx->rtv_descriptor_size));
-    render_ctx->direct_cmd_list->OMSetRenderTargets(1, &cpu_descriptor_handle, FALSE, nullptr);
+    rtv_handle.ptr = SIZE_T(INT64(rtv_handle.ptr) + INT64(render_ctx->frame_index) * INT64(render_ctx->rtv_descriptor_size));
+    render_ctx->direct_cmd_list->OMSetRenderTargets(1, &rtv_handle, FALSE, nullptr);
     
     // -- record commands
     
     // 1 - set all the elements in a render target to one value.
     float clear_colors [] = {0.0f, 0.2f, 0.4f, 1.0f};
-    render_ctx->direct_cmd_list->ClearRenderTargetView(cpu_descriptor_handle, clear_colors, 0, nullptr);
+    render_ctx->direct_cmd_list->ClearRenderTargetView(rtv_handle, clear_colors, 0, nullptr);
 
     // 2 - set primitive type and data order that describes input data for the input assembler stage.
     render_ctx->direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -540,26 +545,26 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     create_triangle_vertices(render_ctx.aspect_ratio, vertices);
     size_t vb_size = sizeof(vertices);
 
-    D3D12_HEAP_PROPERTIES heap_props = {};
-    heap_props.Type = D3D12_HEAP_TYPE_UPLOAD;
-    heap_props.CreationNodeMask = 1U;
-    heap_props.VisibleNodeMask = 1U;
+    D3D12_HEAP_PROPERTIES vb_heap_props = {};
+    vb_heap_props.Type = D3D12_HEAP_TYPE_UPLOAD;
+    vb_heap_props.CreationNodeMask = 1U;
+    vb_heap_props.VisibleNodeMask = 1U;
 
-    D3D12_RESOURCE_DESC rsc_desc = {};
-    rsc_desc.Dimension = D3D12_RESOURCE_DIMENSION::D3D12_RESOURCE_DIMENSION_BUFFER;
-    rsc_desc.Alignment = 0;
-    rsc_desc.Width = vb_size;
-    rsc_desc.Height = 1;
-    rsc_desc.DepthOrArraySize = 1;
-    rsc_desc.MipLevels = 1;
-    rsc_desc.Format = DXGI_FORMAT_UNKNOWN;
-    rsc_desc.SampleDesc.Count = 1;
-    rsc_desc.SampleDesc.Quality = 0;
-    rsc_desc.Layout = D3D12_TEXTURE_LAYOUT::D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    rsc_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    D3D12_RESOURCE_DESC vb_desc = {};
+    vb_desc.Dimension = D3D12_RESOURCE_DIMENSION::D3D12_RESOURCE_DIMENSION_BUFFER;
+    vb_desc.Alignment = 0;
+    vb_desc.Width = vb_size;
+    vb_desc.Height = 1;
+    vb_desc.DepthOrArraySize = 1;
+    vb_desc.MipLevels = 1;
+    vb_desc.Format = DXGI_FORMAT_UNKNOWN;
+    vb_desc.SampleDesc.Count = 1;
+    vb_desc.SampleDesc.Quality = 0;
+    vb_desc.Layout = D3D12_TEXTURE_LAYOUT::D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    vb_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     res = render_ctx.device->CreateCommittedResource(
-        &heap_props, D3D12_HEAP_FLAG_NONE, &rsc_desc,
+        &vb_heap_props, D3D12_HEAP_FLAG_NONE, &vb_desc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr, IID_PPV_ARGS(&render_ctx.vertex_buffer)
     );
@@ -582,34 +587,200 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     // the command list that references it has finished executing on the GPU.
     // We will flush the GPU at the end of this method to ensure the resource is not
     // prematurely destroyed.
-    ID3D12Resource * textureUploadHeap = nullptr;
+    ID3D12Resource * texture_upload_heap = nullptr;
     
     // Create the texture
 
+    D3D12_HEAP_PROPERTIES textu_heap_props = {};
+    textu_heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    textu_heap_props.CreationNodeMask = 1U;
+    textu_heap_props.VisibleNodeMask = 1U;
+
     // -- describe and create a 2D texture
+    D3D12_RESOURCE_DESC texture_desc = {};
+    texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture_desc.Width = 256;
+    texture_desc.Height = 256;
+    texture_desc.DepthOrArraySize = 1;
+    texture_desc.MipLevels = 1;
+    texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.SampleDesc.Quality = 0;
+    texture_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
+    CHECK_AND_FAIL(render_ctx.device->CreateCommittedResource(
+        &textu_heap_props, D3D12_HEAP_FLAG_NONE, &texture_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&render_ctx.texture)
+    ));
 
+    UINT64 upload_buffer_size = 0;
+    UINT first_subresource = 0;
+    UINT num_subresources = 1;
+    auto t_desc = render_ctx.texture->GetDesc();
+    render_ctx.device->GetCopyableFootprints(
+        &t_desc,
+        first_subresource, num_subresources,
+        0, nullptr, nullptr, nullptr,
+        &upload_buffer_size
+    );
 
     // -- create the gpu upload buffer
+    D3D12_HEAP_PROPERTIES ubuffer_heap_props = {};
+    ubuffer_heap_props.Type = D3D12_HEAP_TYPE_UPLOAD;
+    ubuffer_heap_props.CreationNodeMask = 1U;
+    ubuffer_heap_props.VisibleNodeMask = 1U;
 
+    D3D12_RESOURCE_DESC gpu_ubuffer_desc = {};
+    gpu_ubuffer_desc.Dimension = D3D12_RESOURCE_DIMENSION::D3D12_RESOURCE_DIMENSION_BUFFER;
+    gpu_ubuffer_desc.Alignment = 0;
+    gpu_ubuffer_desc.Width = upload_buffer_size;
+    gpu_ubuffer_desc.Height = 1;
+    gpu_ubuffer_desc.DepthOrArraySize = 1;
+    gpu_ubuffer_desc.MipLevels = 1;
+    gpu_ubuffer_desc.Format = DXGI_FORMAT_UNKNOWN;
+    gpu_ubuffer_desc.SampleDesc.Count = 1;
+    gpu_ubuffer_desc.SampleDesc.Quality = 0;
+    gpu_ubuffer_desc.Layout = D3D12_TEXTURE_LAYOUT::D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    gpu_ubuffer_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
+    CHECK_AND_FAIL(render_ctx.device->CreateCommittedResource(
+        &ubuffer_heap_props, D3D12_HEAP_FLAG_NONE, &gpu_ubuffer_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&texture_upload_heap))
+    );
 
     // -- generate texture data
+    uint32_t texture_width = 256;
+    uint32_t texture_height = 256;
+    uint32_t bytes_per_pixel = 4;
+    uint32_t row_pitch = texture_width * bytes_per_pixel;
+    uint32_t cell_width = row_pitch >> 3;
+    uint32_t cell_height = texture_height >> 3;
+    uint32_t texture_size = row_pitch * texture_height;
+    uint8_t * texture_ptr = reinterpret_cast<uint8_t *>(::malloc(texture_size));
+    SIMPLE_ASSERT(texture_ptr);
+    // -- create a simple black and white checkerboard
+    for (uint32_t i = 0; i < texture_size; i += bytes_per_pixel) {
+        uint32_t x = i % row_pitch;
+        uint32_t y = i / row_pitch;
+        uint32_t xx = x / cell_width;
+        uint32_t yy = y / cell_height;
 
-
+        if (xx % 2 == yy % 2) {
+            // Black
+            texture_ptr[i] = 0x00;        // R
+            texture_ptr[i + 1] = 0x00;    // G
+            texture_ptr[i + 2] = 0x00;    // B
+            texture_ptr[i + 3] = 0xff;    // A
+        } else {
+            // White
+            texture_ptr[i] = 0xff;        // R
+            texture_ptr[i + 1] = 0xff;    // G
+            texture_ptr[i + 2] = 0xff;    // B
+            texture_ptr[i + 3] = 0xff;    // A
+        }
+    }
 
     // Copy texture data to the intermediate upload heap and
     // then schedule a copy from the upload heap to the 2D texture
+    D3D12_SUBRESOURCE_DATA texture_data = {};
+    texture_data.pData = texture_ptr;
+    texture_data.RowPitch = row_pitch;
+    texture_data.SlicePitch = texture_data.RowPitch * texture_height;
+
+    /*
+        Notes!
+        The destination resource                is      "render_ctx.texture"
+        The intermediate resource               is      "texture_upload_heap"
+        The source data (texture data to copy)  is      "texture_data"
+    */
+    {
+        UINT first_subresource = 0;
+        UINT num_subresources = 1;
+        UINT64 intermediate_offset = 0;
+        auto textu_desc = render_ctx.texture->GetDesc();
+        auto uheap_desc = texture_upload_heap->GetDesc();
+        
+        UINT64 mem_to_alloc = static_cast<UINT64>(sizeof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT) + sizeof(UINT) + sizeof(UINT64)) * num_subresources;
+        void * mem_ptr = HeapAlloc(GetProcessHeap(), 0, static_cast<SIZE_T>(mem_to_alloc));
+        auto * layouts = static_cast<D3D12_PLACED_SUBRESOURCE_FOOTPRINT *>(mem_ptr);
+        UINT64 * p_row_sizes_in_bytes = reinterpret_cast<UINT64 *>(layouts + num_subresources);
+        UINT * p_num_rows = reinterpret_cast<UINT *>(p_row_sizes_in_bytes + num_subresources);
+
+        UINT64 required_size = 0;
+        render_ctx.device->GetCopyableFootprints(
+            &textu_desc, first_subresource, num_subresources, intermediate_offset, layouts, p_num_rows, p_row_sizes_in_bytes,
+            &required_size
+        );
+        BYTE * p_data = nullptr;
+        texture_upload_heap->Map(0, nullptr, reinterpret_cast<void **>(&p_data));
+        for (UINT i = 0; i < num_subresources; ++i) {
+            D3D12_MEMCPY_DEST dst_data = {};
+            dst_data.pData = p_data + layouts[i].Offset;
+            dst_data.RowPitch = layouts[i].Footprint.RowPitch;
+            dst_data.SlicePitch = SIZE_T(p_num_rows[i]) * SIZE_T(layouts[i].Footprint.RowPitch);
+
+            for (UINT z = 0; z < layouts[i].Footprint.Depth; ++z) {
+                BYTE * dst_slice = (BYTE *)dst_data.pData + dst_data.SlicePitch * z;
+                BYTE * src_slice = (BYTE *)texture_data.pData + texture_data.SlicePitch * LONG_PTR(z);
+                for (UINT y = 0; y < p_num_rows[i]; ++y) {
+                    auto size_to_copy = (SIZE_T)(p_row_sizes_in_bytes[i]);
+                    ::memcpy(
+                        dst_slice + dst_data.RowPitch * y,
+                        src_slice + texture_data.RowPitch * LONG_PTR(y),
+                        size_to_copy
+                    );
+                }
+            }
+
+        }
+        texture_upload_heap->Unmap(0, nullptr);
+
+        /*
+        if (textu_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+            render_ctx.direct_cmd_list->CopyBufferRegion(...);
+        } else {
+        */
+        for (UINT i = 0; i < num_subresources; ++i) {
+            D3D12_TEXTURE_COPY_LOCATION dst = {};
+            dst.pResource = render_ctx.texture;
+            dst.SubresourceIndex = first_subresource + i;
+            dst.PlacedFootprint = {};
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+
+            D3D12_TEXTURE_COPY_LOCATION src = {};
+            src.pResource = texture_upload_heap;
+            src.SubresourceIndex = 0;
+            src.PlacedFootprint = layouts[i];
+            src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+
+            render_ctx.direct_cmd_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+
+        HeapFree(GetProcessHeap(), 0, mem_ptr);
+    }
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.pResource = render_ctx.texture;
+    render_ctx.direct_cmd_list->ResourceBarrier(1, &barrier);
 
 
     // -- describe and create a SRV for the texture
-
-
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Format = texture_desc.Format;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 1;
+    render_ctx.device->CreateShaderResourceView(render_ctx.texture, &srv_desc, render_ctx.srv_heap->GetCPUDescriptorHandleForHeapStart());
 
     // -- close the command list and execute it to begin inital gpu setup
+    CHECK_AND_FAIL(render_ctx.direct_cmd_list->Close());
+    ID3D12CommandList * cmd_lists [] = {render_ctx.direct_cmd_list};
+    render_ctx.cmd_queue->ExecuteCommandLists(ARRAY_COUNT(cmd_lists), cmd_lists);
 
-
-
+    //----------------
     // Create fence
     // create synchronization objects and wait until assets have been uploaded to the GPU.
     CHECK_AND_FAIL(render_ctx.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&render_ctx.fence)));
@@ -620,11 +791,11 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     render_ctx.fence_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if(nullptr == render_ctx.fence_event) {
         // map the error code to an HRESULT value.
-        res = HRESULT_FROM_WIN32(GetLastError());
-        CHECK_AND_FAIL(res);
+        CHECK_AND_FAIL(HRESULT_FROM_WIN32(GetLastError()));
     }
 
     CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
+
 #pragma endregion Initialization
 
     // ========================================================================================================
@@ -654,6 +825,9 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     render_ctx.fence->Release();
 
+    ::free(texture_ptr);
+
+    render_ctx.texture->Release();
     render_ctx.vertex_buffer->Release();
 
     render_ctx.direct_cmd_list->Release();
