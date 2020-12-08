@@ -148,7 +148,7 @@ render_triangle (D3DRenderContext * render_ctx) {
     render_ctx->direct_cmd_list->ClearRenderTargetView(rtv_handle, clear_colors, 0, nullptr);
 
     // 2 - set primitive type and data order that describes input data for the input assembler stage.
-    render_ctx->direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    render_ctx->direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
     // 3 - set the CPU descriptor handle for the vertex buffers (one vb for now)
     render_ctx->direct_cmd_list->IASetVertexBuffers(0 , 1, &render_ctx->vb_view);
@@ -208,6 +208,41 @@ create_triangle_vertices (float aspect_ratio, TextuVertex out_vertices []) {
     out_vertices[0] = vtx1;
     out_vertices[1] = vtx2;
     out_vertices[2] = vtx3;
+}
+static void
+create_quad_vertices (float aspect_ratio, TextuVertex out_vertices []) {
+    TextuVertex vtx1 = {};
+    vtx1.position.x = 0.25f;
+    vtx1.position.y = 0.25f * aspect_ratio;
+    vtx1.position.z = 0.0f;
+    vtx1.uv.x       = 0.0f;
+    vtx1.uv.y       = 0.0f;
+
+    TextuVertex vtx2 = {};
+    vtx2.position.x = -0.25f;
+    vtx2.position.y = 0.25f * aspect_ratio;
+    vtx2.position.z = 0.0f;
+    vtx2.uv.x       = 0.0f;
+    vtx2.uv.y       = 0.0f;
+
+    TextuVertex vtx3 = {};
+    vtx3.position.x = 0.25f;
+    vtx3.position.y = -0.25f * aspect_ratio;
+    vtx3.position.z = 0.0f;
+    vtx3.uv.x       = 0.0f;
+    vtx3.uv.y       = 0.0f;
+
+    TextuVertex vtx4 = {};
+    vtx4.position.x = -0.25f;
+    vtx4.position.y = 0.25f * aspect_ratio;
+    vtx4.position.z = 0.0f;
+    vtx4.uv.x       = 0.0f;
+    vtx4.uv.y       = 0.0f;
+
+    out_vertices[0] = vtx1;
+    out_vertices[1] = vtx2;
+    out_vertices[2] = vtx3;
+    out_vertices[3] = vtx4;
 }
 static bool
 generate_checkerboard_pattern (
@@ -639,6 +674,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     // vertex data
     TextuVertex vertices [3] = {};
     create_triangle_vertices(render_ctx.aspect_ratio, vertices);
+    /*create_quad_vertices(render_ctx.aspect_ratio, vertices);*/
     size_t vb_size = sizeof(vertices);
 
     D3D12_HEAP_PROPERTIES vb_heap_props = {};
