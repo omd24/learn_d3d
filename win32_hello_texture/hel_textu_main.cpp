@@ -209,6 +209,38 @@ create_triangle_vertices (float aspect_ratio, TextuVertex out_vertices []) {
     out_vertices[1] = vtx2;
     out_vertices[2] = vtx3;
 }
+static bool
+generate_checkerboard_pattern (
+    uint32_t texture_size, uint32_t bytes_per_pixel,
+    uint32_t row_pitch, uint32_t cell_width,
+    uint32_t cell_height, uint8_t * texture_ptr
+) {
+    bool ret = false;
+    if (texture_ptr) {
+        for (uint32_t i = 0; i < texture_size; i += bytes_per_pixel) {
+            uint32_t x = i % row_pitch;
+            uint32_t y = i / row_pitch;
+            uint32_t xx = x / cell_width;
+            uint32_t yy = y / cell_height;
+
+            if (xx % 2 == yy % 2) {
+                // Yellow
+                texture_ptr[i] = 0xff;        // R
+                texture_ptr[i + 1] = 0xcc;    // G
+                texture_ptr[i + 2] = 0x00;    // B
+                texture_ptr[i + 3] = 0xff;    // A
+            } else {
+                // Black
+                texture_ptr[i] = 0x00;        // R
+                texture_ptr[i + 1] = 0x00;    // G
+                texture_ptr[i + 2] = 0x00;    // B
+                texture_ptr[i + 3] = 0xff;    // A
+            }
+        }
+        ret = true;
+    }
+    return ret;
+}
 static LRESULT CALLBACK
 main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     LRESULT ret = {};
@@ -228,6 +260,75 @@ main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         } break;
     }
     return ret;
+}
+static void
+copy_data_to_resource (
+    D3DRenderContext * render_ctx,                      // destination resource
+    ID3D12Resource * texture_upload_heap,               // intermediate resource
+    D3D12_SUBRESOURCE_DATA * texture_data               // source data (data to copy)
+) {
+    UINT first_subresource = 0;
+    UINT num_subresources = 1;
+    UINT64 intermediate_offset = 0;
+    auto textu_desc = render_ctx->texture->GetDesc();
+    auto uheap_desc = texture_upload_heap->GetDesc();
+
+    UINT64 mem_to_alloc = static_cast<UINT64>(sizeof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT) + sizeof(UINT) + sizeof(UINT64)) * num_subresources;
+    void * mem_ptr = HeapAlloc(GetProcessHeap(), 0, static_cast<SIZE_T>(mem_to_alloc));
+    auto * layouts = static_cast<D3D12_PLACED_SUBRESOURCE_FOOTPRINT *>(mem_ptr);
+    UINT64 * p_row_sizes_in_bytes = reinterpret_cast<UINT64 *>(layouts + num_subresources);
+    UINT * p_num_rows = reinterpret_cast<UINT *>(p_row_sizes_in_bytes + num_subresources);
+
+    UINT64 required_size = 0;
+    render_ctx->device->GetCopyableFootprints(
+        &textu_desc, first_subresource, num_subresources, intermediate_offset, layouts, p_num_rows, p_row_sizes_in_bytes,
+        &required_size
+    );
+    BYTE * p_data = nullptr;
+    texture_upload_heap->Map(0, nullptr, reinterpret_cast<void **>(&p_data));
+    for (UINT i = 0; i < num_subresources; ++i) {
+        D3D12_MEMCPY_DEST dst_data = {};
+        dst_data.pData = p_data + layouts[i].Offset;
+        dst_data.RowPitch = layouts[i].Footprint.RowPitch;
+        dst_data.SlicePitch = SIZE_T(p_num_rows[i]) * SIZE_T(layouts[i].Footprint.RowPitch);
+
+        for (UINT z = 0; z < layouts[i].Footprint.Depth; ++z) {
+            BYTE * dst_slice = (BYTE *)dst_data.pData + dst_data.SlicePitch * z;
+            BYTE * src_slice = (BYTE *)texture_data->pData + texture_data->SlicePitch * LONG_PTR(z);
+            for (UINT y = 0; y < p_num_rows[i]; ++y) {
+                auto size_to_copy = (SIZE_T)(p_row_sizes_in_bytes[i]);
+                ::memcpy(
+                    dst_slice + dst_data.RowPitch * y,
+                    src_slice + texture_data->RowPitch * LONG_PTR(y),
+                    size_to_copy
+                );
+            }
+        }
+
+    }
+    texture_upload_heap->Unmap(0, nullptr);
+
+    
+    if (textu_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+        render_ctx->direct_cmd_list->CopyBufferRegion(render_ctx->texture, 0, texture_upload_heap, layouts[0].Offset, layouts[0].Footprint.Width);
+    } else {
+        for (UINT i = 0; i < num_subresources; ++i) {
+            D3D12_TEXTURE_COPY_LOCATION dst = {};
+            dst.pResource = render_ctx->texture;
+            dst.SubresourceIndex = first_subresource + i;
+            dst.PlacedFootprint = {};
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+
+            D3D12_TEXTURE_COPY_LOCATION src = {};
+            src.pResource = texture_upload_heap;
+            src.SubresourceIndex = 0;
+            src.PlacedFootprint = layouts[i];
+            src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+
+            render_ctx->direct_cmd_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, mem_ptr);
 }
 INT WINAPI
 WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
@@ -534,11 +635,6 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     res = render_ctx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_ctx.cmd_allocator, render_ctx.pso, IID_PPV_ARGS(&render_ctx.direct_cmd_list));
     CHECK_AND_FAIL(res);
 
-    /*
-    // -- close command list for now (nothing to record yet)
-    CHECK_AND_FAIL(render_ctx.direct_cmd_list->Close());
-    */
-
     // Create vertex buffer (VB)
     // vertex data
     TextuVertex vertices [3] = {};
@@ -583,13 +679,14 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     render_ctx.vb_view.StrideInBytes = sizeof(*vertices);
     render_ctx.vb_view.SizeInBytes = (UINT)vb_size;
 
+#pragma region Create Texture
     // Note: This pointer is a CPU object but this resource needs to stay in scope until
     // the command list that references it has finished executing on the GPU.
     // We will flush the GPU at the end of this method to ensure the resource is not
     // prematurely destroyed.
     ID3D12Resource * texture_upload_heap = nullptr;
-    
-    // Create the texture
+
+    // -- creating texture
 
     D3D12_HEAP_PROPERTIES textu_heap_props = {};
     textu_heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -654,29 +751,10 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     uint32_t cell_width = row_pitch >> 3;
     uint32_t cell_height = texture_height >> 3;
     uint32_t texture_size = row_pitch * texture_height;
+    // TODO(omid): perhaps create texture on stack?
     uint8_t * texture_ptr = reinterpret_cast<uint8_t *>(::malloc(texture_size));
-    SIMPLE_ASSERT(texture_ptr);
-    // -- create a simple black and white checkerboard
-    for (uint32_t i = 0; i < texture_size; i += bytes_per_pixel) {
-        uint32_t x = i % row_pitch;
-        uint32_t y = i / row_pitch;
-        uint32_t xx = x / cell_width;
-        uint32_t yy = y / cell_height;
-
-        if (xx % 2 == yy % 2) {
-            // Black
-            texture_ptr[i] = 0x00;        // R
-            texture_ptr[i + 1] = 0x00;    // G
-            texture_ptr[i + 2] = 0x00;    // B
-            texture_ptr[i + 3] = 0xff;    // A
-        } else {
-            // White
-            texture_ptr[i] = 0xff;        // R
-            texture_ptr[i + 1] = 0xff;    // G
-            texture_ptr[i + 2] = 0xff;    // B
-            texture_ptr[i + 3] = 0xff;    // A
-        }
-    }
+    // -- create a simple yellow and black checkerboard pattern
+    generate_checkerboard_pattern(texture_size, bytes_per_pixel, row_pitch, cell_width, cell_height, texture_ptr);
 
     // Copy texture data to the intermediate upload heap and
     // then schedule a copy from the upload heap to the 2D texture
@@ -684,78 +762,9 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     texture_data.pData = texture_ptr;
     texture_data.RowPitch = row_pitch;
     texture_data.SlicePitch = texture_data.RowPitch * texture_height;
+    copy_data_to_resource(&render_ctx, texture_upload_heap, &texture_data);
 
-    /*
-        Notes!
-        The destination resource                is      "render_ctx.texture"
-        The intermediate resource               is      "texture_upload_heap"
-        The source data (texture data to copy)  is      "texture_data"
-    */
-    {
-        UINT first_subresource = 0;
-        UINT num_subresources = 1;
-        UINT64 intermediate_offset = 0;
-        auto textu_desc = render_ctx.texture->GetDesc();
-        auto uheap_desc = texture_upload_heap->GetDesc();
-        
-        UINT64 mem_to_alloc = static_cast<UINT64>(sizeof(D3D12_PLACED_SUBRESOURCE_FOOTPRINT) + sizeof(UINT) + sizeof(UINT64)) * num_subresources;
-        void * mem_ptr = HeapAlloc(GetProcessHeap(), 0, static_cast<SIZE_T>(mem_to_alloc));
-        auto * layouts = static_cast<D3D12_PLACED_SUBRESOURCE_FOOTPRINT *>(mem_ptr);
-        UINT64 * p_row_sizes_in_bytes = reinterpret_cast<UINT64 *>(layouts + num_subresources);
-        UINT * p_num_rows = reinterpret_cast<UINT *>(p_row_sizes_in_bytes + num_subresources);
-
-        UINT64 required_size = 0;
-        render_ctx.device->GetCopyableFootprints(
-            &textu_desc, first_subresource, num_subresources, intermediate_offset, layouts, p_num_rows, p_row_sizes_in_bytes,
-            &required_size
-        );
-        BYTE * p_data = nullptr;
-        texture_upload_heap->Map(0, nullptr, reinterpret_cast<void **>(&p_data));
-        for (UINT i = 0; i < num_subresources; ++i) {
-            D3D12_MEMCPY_DEST dst_data = {};
-            dst_data.pData = p_data + layouts[i].Offset;
-            dst_data.RowPitch = layouts[i].Footprint.RowPitch;
-            dst_data.SlicePitch = SIZE_T(p_num_rows[i]) * SIZE_T(layouts[i].Footprint.RowPitch);
-
-            for (UINT z = 0; z < layouts[i].Footprint.Depth; ++z) {
-                BYTE * dst_slice = (BYTE *)dst_data.pData + dst_data.SlicePitch * z;
-                BYTE * src_slice = (BYTE *)texture_data.pData + texture_data.SlicePitch * LONG_PTR(z);
-                for (UINT y = 0; y < p_num_rows[i]; ++y) {
-                    auto size_to_copy = (SIZE_T)(p_row_sizes_in_bytes[i]);
-                    ::memcpy(
-                        dst_slice + dst_data.RowPitch * y,
-                        src_slice + texture_data.RowPitch * LONG_PTR(y),
-                        size_to_copy
-                    );
-                }
-            }
-
-        }
-        texture_upload_heap->Unmap(0, nullptr);
-
-        /*
-        if (textu_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
-            render_ctx.direct_cmd_list->CopyBufferRegion(...);
-        } else {
-        */
-        for (UINT i = 0; i < num_subresources; ++i) {
-            D3D12_TEXTURE_COPY_LOCATION dst = {};
-            dst.pResource = render_ctx.texture;
-            dst.SubresourceIndex = first_subresource + i;
-            dst.PlacedFootprint = {};
-            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-
-            D3D12_TEXTURE_COPY_LOCATION src = {};
-            src.pResource = texture_upload_heap;
-            src.SubresourceIndex = 0;
-            src.PlacedFootprint = layouts[i];
-            src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-
-            render_ctx.direct_cmd_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        }
-
-        HeapFree(GetProcessHeap(), 0, mem_ptr);
-    }
+#pragma endregion Create Texture
 
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -765,7 +774,6 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     barrier.Transition.pResource = render_ctx.texture;
     render_ctx.direct_cmd_list->ResourceBarrier(1, &barrier);
-
 
     // -- describe and create a SRV for the texture
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
@@ -825,6 +833,8 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     render_ctx.fence->Release();
 
+    texture_upload_heap->Release();
+    
     ::free(texture_ptr);
 
     render_ctx.texture->Release();
