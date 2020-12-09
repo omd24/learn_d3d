@@ -226,7 +226,49 @@ create_triangle_vertices (float aspect_ratio, Vertex out_vertices []) {
     out_vertices[1] = v_green;
     out_vertices[2] = v_blue;
 }
+static void
+create_quad_vertices (float aspect_ratio, Vertex out_vertices []) {
+    Vertex vtx1 = {};
+    vtx1.position.x = -0.25f;
+    vtx1.position.y = 0.25f * aspect_ratio;
+    vtx1.position.z = 0.0f;
+    vtx1.color.x = 1.0f;
+    vtx1.color.y = 0.0f;
+    vtx1.color.z = 0.0f;
+    vtx1.color.w = 1.0f;
 
+    Vertex vtx2 = {};
+    vtx2.position.x = 0.25f;
+    vtx2.position.y = 0.25f * aspect_ratio;
+    vtx2.position.z = 0.0f;
+    vtx2.color.x = 1.0f;
+    vtx2.color.y = 0.0f;
+    vtx2.color.z = 0.0f;
+    vtx2.color.w = 1.0f;
+
+    Vertex vtx3 = {};
+    vtx3.position.x = -0.25f;
+    vtx3.position.y = -0.25f * aspect_ratio;
+    vtx3.position.z = 0.0f;
+    vtx3.color.x = 1.0f;
+    vtx3.color.y = 0.0f;
+    vtx3.color.z = 0.0f;
+    vtx3.color.w = 1.0f;
+
+    Vertex vtx4 = {};
+    vtx4.position.x = 0.25f;
+    vtx4.position.y = -0.25f * aspect_ratio;
+    vtx4.position.z = 0.0f;
+    vtx4.color.x = 1.0f;
+    vtx4.color.y = 0.0f;
+    vtx4.color.z = 0.0f;
+    vtx4.color.w = 1.0f;
+
+    out_vertices[0] = vtx1;
+    out_vertices[1] = vtx2;
+    out_vertices[2] = vtx3;
+    out_vertices[3] = vtx4;
+}
 
 static LRESULT CALLBACK
 main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -494,6 +536,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     // vertex data
     Vertex vertices [3] = {};
     create_triangle_vertices(render_ctx.aspect_ratio, vertices);
+    //create_quad_vertices(render_ctx.aspect_ratio, vertices);
     size_t vb_size = sizeof(vertices);
 
     // NOTE(omid): An upload heap is used here for code simplicity 

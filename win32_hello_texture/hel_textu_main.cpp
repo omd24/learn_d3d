@@ -103,7 +103,7 @@ wait_for_previous_frame (D3DRenderContext * render_ctx) {
     return ret;
 }
 static HRESULT
-render_triangle (D3DRenderContext * render_ctx) {
+render_stuff (D3DRenderContext * render_ctx) {
     
     HRESULT ret = E_FAIL;
 
@@ -144,7 +144,7 @@ render_triangle (D3DRenderContext * render_ctx) {
     // -- record commands
     
     // 1 - set all the elements in a render target to one value.
-    float clear_colors [] = {0.0f, 0.2f, 0.4f, 1.0f};
+    float clear_colors [] = {0.2f, 0.3f, 0.4f, 1.0f};
     render_ctx->direct_cmd_list->ClearRenderTargetView(rtv_handle, clear_colors, 0, nullptr);
 
     // 2 - set primitive type and data order that describes input data for the input assembler stage.
@@ -155,7 +155,7 @@ render_triangle (D3DRenderContext * render_ctx) {
 
     // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
     render_ctx->direct_cmd_list->DrawInstanced(
-        3,  /* number of vertices to draw.                                                          */
+        4,  /* number of vertices to draw.                                                          */
         1,  /* number of instances to draw.                                                         */
         0,  /* index of the first vertex                                                            */
         0   /* a value added to each index before reading per-instance data from a vertex buffer    */
@@ -212,31 +212,31 @@ create_triangle_vertices (float aspect_ratio, TextuVertex out_vertices []) {
 static void
 create_quad_vertices (float aspect_ratio, TextuVertex out_vertices []) {
     TextuVertex vtx1 = {};
-    vtx1.position.x = 0.25f;
+    vtx1.position.x = -0.25f;
     vtx1.position.y = 0.25f * aspect_ratio;
     vtx1.position.z = 0.0f;
     vtx1.uv.x       = 0.0f;
-    vtx1.uv.y       = 0.0f;
+    vtx1.uv.y       = 0.5f;
 
     TextuVertex vtx2 = {};
-    vtx2.position.x = -0.25f;
+    vtx2.position.x = 0.25f;
     vtx2.position.y = 0.25f * aspect_ratio;
     vtx2.position.z = 0.0f;
-    vtx2.uv.x       = 0.0f;
-    vtx2.uv.y       = 0.0f;
+    vtx2.uv.x       = 0.5f;
+    vtx2.uv.y       = 0.5f;
 
     TextuVertex vtx3 = {};
-    vtx3.position.x = 0.25f;
+    vtx3.position.x = -0.25f;
     vtx3.position.y = -0.25f * aspect_ratio;
     vtx3.position.z = 0.0f;
     vtx3.uv.x       = 0.0f;
     vtx3.uv.y       = 0.0f;
 
     TextuVertex vtx4 = {};
-    vtx4.position.x = -0.25f;
-    vtx4.position.y = 0.25f * aspect_ratio;
+    vtx4.position.x = 0.25f;
+    vtx4.position.y = -0.25f * aspect_ratio;
     vtx4.position.z = 0.0f;
-    vtx4.uv.x       = 0.0f;
+    vtx4.uv.x       = 0.5f;
     vtx4.uv.y       = 0.0f;
 
     out_vertices[0] = vtx1;
@@ -672,9 +672,10 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     // Create vertex buffer (VB)
     // vertex data
-    TextuVertex vertices [3] = {};
-    create_triangle_vertices(render_ctx.aspect_ratio, vertices);
-    /*create_quad_vertices(render_ctx.aspect_ratio, vertices);*/
+    /*TextuVertex vertices [3] = {};
+    create_triangle_vertices(render_ctx.aspect_ratio, vertices);*/
+    TextuVertex vertices [4] = {};
+    create_quad_vertices(render_ctx.aspect_ratio, vertices);
     size_t vb_size = sizeof(vertices);
 
     D3D12_HEAP_PROPERTIES vb_heap_props = {};
@@ -855,7 +856,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         // -- nothing is updated
 
         // OnRender() aka rendering
-        CHECK_AND_FAIL(render_triangle(&render_ctx));
+        CHECK_AND_FAIL(render_stuff(&render_ctx));
 
         CHECK_AND_FAIL(wait_for_previous_frame(&render_ctx));
     }
