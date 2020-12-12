@@ -254,22 +254,22 @@ generate_checkerboard_pattern (
     if (texture_ptr) {
         for (uint32_t i = 0; i < texture_size; i += bytes_per_pixel) {
             
-            uint32_t x = i % row_pitch;         // which row
-            uint32_t y = i / row_pitch;         // which column
+            uint32_t x = i % row_pitch;         // row index
+            uint32_t y = i / row_pitch;         // column index
 
-            // -- (xx, yy) determines cell number
+            // -- cell indices (xx, yy)
             uint32_t xx = x / cell_width;
             uint32_t yy = y / cell_height;
 
-            // -- color cell based on a "checkered pattern" logic
-            if (xx % 2 == yy % 2) {             // -- both xx and yy are either even or odd
+            // -- color cell
+            if (xx % 2 == yy % 2) {
                 // Yellow
                 texture_ptr[i] = 0xff;          // R
                 texture_ptr[i + 1] = 0xcc;      // G
                 texture_ptr[i + 2] = 0x00;      // B
                 texture_ptr[i + 3] = 0xff;      // A
 
-            } else {                            // -- else (comment of the century!)
+            } else {
                 // Black
                 texture_ptr[i] = 0x00;          // R
                 texture_ptr[i + 1] = 0x00;      // G
@@ -934,4 +934,5 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     return 0;
 }
+
 

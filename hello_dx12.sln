@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "win32_hello_texture", "win3
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sdl_hello_d3d12", "sdl_hello_d3d12\sdl_hello_d3d12.vcxproj", "{AE6F1DB8-4F3E-4E8C-A662-BA8FD522B9CB}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "win32_hello_bundles", "win32_hello_bundles\win32_hello_bundles.vcxproj", "{3CEF0F51-C335-4C91-908D-01B3C9C3118C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -41,6 +43,14 @@ Global
 		{AE6F1DB8-4F3E-4E8C-A662-BA8FD522B9CB}.Release|x64.Build.0 = Release|x64
 		{AE6F1DB8-4F3E-4E8C-A662-BA8FD522B9CB}.Release|x86.ActiveCfg = Release|Win32
 		{AE6F1DB8-4F3E-4E8C-A662-BA8FD522B9CB}.Release|x86.Build.0 = Release|Win32
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Debug|x64.ActiveCfg = Debug|x64
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Debug|x64.Build.0 = Debug|x64
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Debug|x86.ActiveCfg = Debug|Win32
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Debug|x86.Build.0 = Debug|Win32
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Release|x64.ActiveCfg = Release|x64
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Release|x64.Build.0 = Release|x64
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Release|x86.ActiveCfg = Release|Win32
+		{3CEF0F51-C335-4C91-908D-01B3C9C3118C}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
