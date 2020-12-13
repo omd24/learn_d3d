@@ -51,12 +51,14 @@ struct D3DRenderContext {
     ID3D12Device *                  device;
     ID3D12Resource *                render_targets [FRAME_COUNT];
     ID3D12CommandAllocator *        cmd_allocator;
+    ID3D12CommandAllocator *        bundle_allocator;
     ID3D12CommandQueue *            cmd_queue;
     ID3D12RootSignature *           root_signature;
     ID3D12DescriptorHeap *          rtv_heap;
     ID3D12DescriptorHeap *          srv_heap;
     ID3D12PipelineState *           pso;
     ID3D12GraphicsCommandList *     direct_cmd_list;
+    ID3D12GraphicsCommandList *     bundle;
     UINT                            rtv_descriptor_size;
 
     // App resources
@@ -141,11 +143,13 @@ render_stuff (D3DRenderContext * render_ctx) {
     rtv_handle.ptr = SIZE_T(INT64(rtv_handle.ptr) + INT64(render_ctx->frame_index) * INT64(render_ctx->rtv_descriptor_size));
     render_ctx->direct_cmd_list->OMSetRenderTargets(1, &rtv_handle, FALSE, nullptr);
     
-    // -- record commands
+    // -- record command(s)
     
     // 1 - set all the elements in a render target to one value.
-    float clear_colors [] = {0.2f, 0.3f, 0.4f, 1.0f};
+    float clear_colors [] = {0.4f, 0.4f, 0.2f, 1.0f};
     render_ctx->direct_cmd_list->ClearRenderTargetView(rtv_handle, clear_colors, 0, nullptr);
+
+    /* using a bundle instead of the following commands:
 
     // 2 - set primitive type and data order that describes input data for the input assembler stage.
     render_ctx->direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -155,11 +159,16 @@ render_stuff (D3DRenderContext * render_ctx) {
 
     // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
     render_ctx->direct_cmd_list->DrawInstanced(
-        4,  /* number of vertices to draw.                                                          */
-        1,  /* number of instances to draw.                                                         */
-        0,  /* index of the first vertex                                                            */
-        0   /* a value added to each index before reading per-instance data from a vertex buffer    */
+        4,
+        1,
+        0,
+        0 
     );
+
+    */
+
+    // -- execute bundle commands
+    render_ctx->direct_cmd_list->ExecuteBundle(render_ctx->bundle);
 
     // -- indicate that the backbuffer will now be used to present
     D3D12_RESOURCE_BARRIER barrier2 = {};
@@ -169,6 +178,7 @@ render_stuff (D3DRenderContext * render_ctx) {
     barrier2.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier2.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier2.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+
 
     render_ctx->direct_cmd_list->ResourceBarrier(1 , &barrier2);
 
@@ -263,15 +273,15 @@ generate_checkerboard_pattern (
 
             // -- color cell
             if (xx % 2 == yy % 2) {
-                // Yellow
-                texture_ptr[i] = 0xff;          // R
-                texture_ptr[i + 1] = 0xcc;      // G
-                texture_ptr[i + 2] = 0x00;      // B
+                // white
+                texture_ptr[i] = 0xee;          // R
+                texture_ptr[i + 1] = 0xee;      // G
+                texture_ptr[i + 2] = 0xee;      // B
                 texture_ptr[i + 3] = 0xff;      // A
 
             } else {
-                // Black
-                texture_ptr[i] = 0x00;          // R
+                // dark red
+                texture_ptr[i] = 0x44;          // R
                 texture_ptr[i + 1] = 0x00;      // G
                 texture_ptr[i + 2] = 0x00;      // B
                 texture_ptr[i + 3] = 0xff;      // A
@@ -302,7 +312,7 @@ main_win_cb (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     return ret;
 }
 static void
-copy_data_to_resource (
+copy_texture_data_to_texture_resource (
     D3DRenderContext * render_ctx,                      // destination resource
     ID3D12Resource * texture_upload_heap,               // intermediate resource
     D3D12_SUBRESOURCE_DATA * texture_data               // source data (data to copy)
@@ -348,10 +358,12 @@ copy_data_to_resource (
     }
     texture_upload_heap->Unmap(0, nullptr);
 
-    
-    if (textu_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+    // currently this function doesn't work with buffer resources
+    SIMPLE_ASSERT(textu_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER);
+
+    /*if (textu_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
         render_ctx->direct_cmd_list->CopyBufferRegion(render_ctx->texture, 0, texture_upload_heap, layouts[0].Offset, layouts[0].Footprint.Width);
-    } else {
+    } else {*/
         for (UINT i = 0; i < num_subresources; ++i) {
             D3D12_TEXTURE_COPY_LOCATION dst = {};
             dst.pResource = render_ctx->texture;
@@ -367,7 +379,7 @@ copy_data_to_resource (
 
             render_ctx->direct_cmd_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         }
-    }
+    /*}*/
     HeapFree(GetProcessHeap(), 0, mem_ptr);
 }
 INT WINAPI
@@ -385,7 +397,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     HWND hwnd = CreateWindowExA(
         0,                                      // Optional window styles.
         wc.lpszClassName,                       // Window class
-        "Hello texture app",        // Window text
+        "Hello bundles app",        // Window text
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,       // Window style
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, // Size and position settings
         0 /* Parent window */,  0 /* Menu */, hInstance /* Instance handle */, 0 /* Additional application data */
@@ -512,8 +524,10 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         render_ctx.device->CreateRenderTargetView(render_ctx.render_targets[i], nullptr, cpu_handle);
     }
 
-    // Create command allocator
+    // Create command allocator and bundle allocator
     res = render_ctx.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&render_ctx.cmd_allocator));
+    res = render_ctx.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&render_ctx.bundle_allocator));
+
     CHECK_AND_FAIL(res);
 
     // ========================================================================================================
@@ -790,8 +804,8 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     uint32_t texture_height     = 256;
     uint32_t bytes_per_pixel    = 4;
     uint32_t row_pitch          = texture_width * bytes_per_pixel;
-    uint32_t cell_width         = (texture_width >> 4) * bytes_per_pixel;           // actual "cell_width" muliplied by "bytes_per_pixel"
-    uint32_t cell_height        = (texture_height >> 4);
+    uint32_t cell_width         = (texture_width >> 3) * bytes_per_pixel;           // actual "cell_width" muliplied by "bytes_per_pixel"
+    uint32_t cell_height        = (texture_height >> 3);
     uint32_t texture_size       = texture_width * texture_height * bytes_per_pixel;
     // TODO(omid): perhaps create texture on stack?
     uint8_t * texture_ptr = reinterpret_cast<uint8_t *>(::malloc(texture_size));
@@ -804,7 +818,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     texture_data.pData = texture_ptr;
     texture_data.RowPitch = row_pitch;
     texture_data.SlicePitch = texture_data.RowPitch * texture_height;
-    copy_data_to_resource(&render_ctx, texture_upload_heap, &texture_data);
+    copy_texture_data_to_texture_resource(&render_ctx, texture_upload_heap, &texture_data);
 
 #pragma endregion Create Texture
 
@@ -829,6 +843,18 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     CHECK_AND_FAIL(render_ctx.direct_cmd_list->Close());
     ID3D12CommandList * cmd_lists [] = {render_ctx.direct_cmd_list};
     render_ctx.cmd_queue->ExecuteCommandLists(ARRAY_COUNT(cmd_lists), cmd_lists);
+
+#pragma region Bundle
+    // -- create and record the bundle
+    CHECK_AND_FAIL(render_ctx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_BUNDLE, render_ctx.bundle_allocator, render_ctx.pso, IID_PPV_ARGS(&render_ctx.bundle)));
+    render_ctx.bundle->SetGraphicsRootSignature(render_ctx.root_signature);
+    render_ctx.bundle->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    render_ctx.bundle->IASetVertexBuffers(0, 1, &render_ctx.vb_view);
+    render_ctx.bundle->DrawInstanced(4, 1, 0, 0);
+    CHECK_AND_FAIL(render_ctx.bundle->Close());
+#pragma endregion Bundle
+
+
 
     //----------------
     // Create fence
@@ -875,6 +901,8 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
 
     render_ctx.fence->Release();
 
+    render_ctx.bundle->Release();
+
     texture_upload_heap->Release();
     
     ::free(texture_ptr);
@@ -893,6 +921,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         signature_error_blob->Release();
     signature->Release();
 
+    render_ctx.bundle_allocator->Release();
     render_ctx.cmd_allocator->Release();
 
     for (unsigned i = 0; i < FRAME_COUNT; ++i) {
