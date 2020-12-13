@@ -145,19 +145,23 @@ render_stuff (D3DRenderContext * render_ctx) {
     
     // -- record command(s)
     
-    // 1 - set all the elements in a render target to one value.
+    // NOTE(omid): We can't use any "clear" method with bundles, so we use the command-list itself to clear rtv
+    // Refer to the following link for more info on bundles restrictions:
+    // https://docs.microsoft.com/en-us/windows/win32/direct3d12/recording-command-lists-and-bundles?source=docs#bundle-restrictions
+
+    // set all the elements in a render target to one value.
     float clear_colors [] = {0.4f, 0.4f, 0.2f, 1.0f};
     render_ctx->direct_cmd_list->ClearRenderTargetView(rtv_handle, clear_colors, 0, nullptr);
 
     /* using a bundle instead of the following commands:
 
-    // 2 - set primitive type and data order that describes input data for the input assembler stage.
+    // set primitive type and data order that describes input data for the input assembler stage.
     render_ctx->direct_cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-    // 3 - set the CPU descriptor handle for the vertex buffers (one vb for now)
+    // set the CPU descriptor handle for the vertex buffers (one vb for now)
     render_ctx->direct_cmd_list->IASetVertexBuffers(0 , 1, &render_ctx->vb_view);
 
-    // 4 - draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
+    // draws non-indexed, instanced primitives. A draw API submits work to the rendering pipeline.
     render_ctx->direct_cmd_list->DrawInstanced(
         4,
         1,
