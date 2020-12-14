@@ -60,13 +60,17 @@ struct D3DRenderContext {
     ID3D12CommandAllocator *        bundle_allocator;
     ID3D12CommandQueue *            cmd_queue;
     ID3D12RootSignature *           root_signature;
-    ID3D12DescriptorHeap *          rtv_heap;
-    ID3D12DescriptorHeap *          srv_heap;
-    ID3D12DescriptorHeap *          cbv_heap;
     ID3D12PipelineState *           pso;
     ID3D12GraphicsCommandList *     direct_cmd_list;
     ID3D12GraphicsCommandList *     bundle;
     UINT                            rtv_descriptor_size;
+    UINT                            srv_cbv_descriptor_size;
+
+    ID3D12DescriptorHeap *          rtv_heap;
+    // NOTE(omid): Instead of separate descriptor heap use one for both srv and cbv 
+    ID3D12DescriptorHeap *          srv_cbv_heap;
+    //ID3D12DescriptorHeap *          srv_heap;
+    //ID3D12DescriptorHeap *          cbv_heap;
 
     // App resources
     ID3D12Resource *                texture;
@@ -142,10 +146,15 @@ render_stuff (D3DRenderContext * render_ctx) {
     render_ctx->direct_cmd_list->RSSetViewports(1, &render_ctx->viewport);
     render_ctx->direct_cmd_list->RSSetScissorRects(1, &render_ctx->scissor_rect);
 
-    // -- set descriptor heaps and root descriptro table
-    ID3D12DescriptorHeap * heaps [] = {render_ctx->srv_heap};
+    // -- set descriptor heaps and root descriptor table (index 0 for srv, and index 1 for cbv)
+    ID3D12DescriptorHeap * heaps [] = {render_ctx->srv_cbv_heap};
     render_ctx->direct_cmd_list->SetDescriptorHeaps(ARRAY_COUNT(heaps), heaps);
-    render_ctx->direct_cmd_list->SetGraphicsRootDescriptorTable(0, render_ctx->srv_heap->GetGPUDescriptorHandleForHeapStart());
+    render_ctx->direct_cmd_list->SetGraphicsRootDescriptorTable(0, render_ctx->srv_cbv_heap->GetGPUDescriptorHandleForHeapStart());
+    
+    SIMPLE_ASSERT(render_ctx->srv_cbv_descriptor_size > 0);
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_gpu_handle = {};
+    cbv_gpu_handle.ptr = render_ctx->srv_cbv_heap->GetGPUDescriptorHandleForHeapStart().ptr + (UINT64)render_ctx->srv_cbv_descriptor_size;
+    render_ctx->direct_cmd_list->SetGraphicsRootDescriptorTable(1, cbv_gpu_handle);
 
     // -- indicate that the backbuffer will be used as the render target
     D3D12_RESOURCE_BARRIER barrier1 = {};
@@ -158,7 +167,7 @@ render_stuff (D3DRenderContext * render_ctx) {
 
     render_ctx->direct_cmd_list->ResourceBarrier(1, &barrier1);
     
-    // -- get CPU descriptor handle that represents the start of the heap
+    // -- get CPU descriptor handle that represents the start of the rtv heap
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = render_ctx->rtv_heap->GetCPUDescriptorHandleForHeapStart();
     // -- apply initial offset
     rtv_handle.ptr = SIZE_T(INT64(rtv_handle.ptr) + INT64(render_ctx->frame_index) * INT64(render_ctx->rtv_descriptor_size));
@@ -507,32 +516,27 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     CHECK_AND_FAIL(render_ctx.device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&render_ctx.rtv_heap)));
     
-    // Create a Shader Resource View (SRV) heap for the texture
-    D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.NumDescriptors = 1;
-    srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    CHECK_AND_FAIL(render_ctx.device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&render_ctx.srv_heap)));
+    // NOTE(omid): We create a single descriptor heap for both SRV and CBV 
+    // -- A shader resource view (SRV) for the texture  (index 0 of srv_cbv_heap) 
+    // -- A constant buffer view (CBV) for animation    (index 1 of srv_cbv_heap) 
 
-    // Describe and create a constant buffer view (CBV) descriptor heap
+    // Create srv_cbv_heap for SRV and CBV
     // Flags indicate that this descriptor heap can be bound to the pipeline
     // and that descriptors contained in it can be referenced by a root table
-    D3D12_DESCRIPTOR_HEAP_DESC cbv_heap_desc = {};
-    cbv_heap_desc.NumDescriptors = 1;
-    cbv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    cbv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    CHECK_AND_FAIL(render_ctx.device->CreateDescriptorHeap(&cbv_heap_desc, IID_PPV_ARGS(&render_ctx.cbv_heap)));
+    D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {};
+    heap_desc.NumDescriptors = 2;
+    heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    CHECK_AND_FAIL(render_ctx.device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&render_ctx.srv_cbv_heap)));
 
-    // -- create frame resources
 
+    // -- create frame resources (rtv)
     render_ctx.rtv_descriptor_size = render_ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    ::printf("size of rtv descriptor heap (to increment handle): %d\n", render_ctx.rtv_descriptor_size);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle_start = render_ctx.rtv_heap->GetCPUDescriptorHandleForHeapStart();
     for (UINT i = 0; i < FRAME_COUNT; ++i) {
         CHECK_AND_FAIL(render_ctx.swapchain3->GetBuffer(i, IID_PPV_ARGS(&render_ctx.render_targets[i])));
         
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
-        //cpu_handle.ptr = SIZE_T(INT64(rtv_handle_start) + INT64(1) * INT64(rtv_descriptor_size));
         cpu_handle.ptr = rtv_handle_start.ptr + ((UINT64)i * render_ctx.rtv_descriptor_size);
         // -- create a rtv for each frame
         render_ctx.device->CreateRenderTargetView(render_ctx.render_targets[i], nullptr, cpu_handle);
@@ -722,14 +726,11 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     pso_desc.SampleDesc.Count = 1;
     pso_desc.SampleDesc.Quality = 0;
 
-    res = render_ctx.device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&render_ctx.pso));
-    CHECK_AND_FAIL(res);
+    CHECK_AND_FAIL(render_ctx.device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&render_ctx.pso)));
 
     // Create command list
-    res = render_ctx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_ctx.cmd_allocator, render_ctx.pso, IID_PPV_ARGS(&render_ctx.direct_cmd_list));
-    CHECK_AND_FAIL(res);
+    CHECK_AND_FAIL(render_ctx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, render_ctx.cmd_allocator, render_ctx.pso, IID_PPV_ARGS(&render_ctx.direct_cmd_list)));
 
-    // Create vertex buffer (VB)
     // vertex data
     /*TextuVertex vertices [3] = {};
     create_triangle_vertices(render_ctx.aspect_ratio, vertices);*/
@@ -876,7 +877,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     srv_desc.Format = texture_desc.Format;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv_desc.Texture2D.MipLevels = 1;
-    render_ctx.device->CreateShaderResourceView(render_ctx.texture, &srv_desc, render_ctx.srv_heap->GetCPUDescriptorHandleForHeapStart());
+    render_ctx.device->CreateShaderResourceView(render_ctx.texture, &srv_desc, render_ctx.srv_cbv_heap->GetCPUDescriptorHandleForHeapStart());
 
     // -- close the command list and execute it to begin inital gpu setup
     CHECK_AND_FAIL(render_ctx.direct_cmd_list->Close());
@@ -912,11 +913,16 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         nullptr,
         IID_PPV_ARGS(&render_ctx.constant_buffer)));
 
+
+    render_ctx.srv_cbv_descriptor_size = render_ctx.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE cbv_cpu_handle = {};
+    cbv_cpu_handle.ptr = render_ctx.srv_cbv_heap->GetCPUDescriptorHandleForHeapStart().ptr + (UINT64)render_ctx.srv_cbv_descriptor_size;
+
     // Describe and create a constant buffer view.
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
     cbv_desc.BufferLocation = render_ctx.constant_buffer->GetGPUVirtualAddress();
     cbv_desc.SizeInBytes = cb_size;
-    render_ctx.device->CreateConstantBufferView(&cbv_desc, render_ctx.cbv_heap->GetCPUDescriptorHandleForHeapStart());
+    render_ctx.device->CreateConstantBufferView(&cbv_desc, cbv_cpu_handle);
 
     // Map and initialize the constant buffer. We don't unmap this until the
     // app closes. Keeping things mapped for the lifetime of the resource is okay.
@@ -1011,8 +1017,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
         render_ctx.render_targets[i]->Release();
     }
 
-    render_ctx.cbv_heap->Release();
-    render_ctx.srv_heap->Release();
+    render_ctx.srv_cbv_heap->Release();
     render_ctx.rtv_heap->Release();
 
     render_ctx.swapchain3->Release();
@@ -1021,7 +1026,9 @@ WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, INT) {
     render_ctx.device->Release();
     dxgi_factory->Release();
 
-    debug_interface_dx->Release();
+    #if (ENABLE_DEBUG_LAYER > 0)
+        debug_interface_dx->Release();
+    #endif
 
     // -- advanced debugging and reporting live objects [from https://walbourn.github.io/dxgi-debug-device/]
 
