@@ -1,3 +1,7 @@
+cbuffer SceneConstantBuffer : register(b0) {
+    float4 offset;
+    float4 padding [15];
+}
 struct PixelShaderInput {
     float4 position : SV_Position;
     float2 uv : TEXCOORD;
@@ -9,7 +13,7 @@ SamplerState global_sampler : register(s0);
 PixelShaderInput
 VertexShader_Main (float4 p : POSITION, float4 uv : TEXCOORD) {
     PixelShaderInput result;
-    result.position = p;
+    result.position = p + offset;       // apply offset from cbuffer
     result.uv = uv;
     return result;
 }
